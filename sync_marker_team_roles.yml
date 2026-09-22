@@ -2,9 +2,10 @@
 # Ensure a marker team + authenticator map exist, then sync the
 # "Organization Execute" role for every marker-team member across all orgs.
 #
-# Pattern: filetree_create / filetree_read (AAP export only) +
-# infra.aap_configuration.dispatch. Desired objects are built in-memory with
-# set_fact (no throwaway YAML for definitions that dispatch already consumes).
+# Reads use ansible.builtin.uri against the Gateway API (filetree_create /
+# ansible.platform.gateway_api lookup is unreliable inside many EEs — it often
+# surfaces as "'PlatformError' object has no attribute 'retryable'").
+# Writes use infra.aap_configuration.dispatch with in-memory set_fact payloads.
 
 - name: Manage marker team, authenticator map, and dynamic role sync on AAP
   hosts: localhost
@@ -28,15 +29,20 @@
         has_or:
           - CN=crossexecutors,CN=Users,DC=win,DC=iam,DC=lab
 
-    # Temp dir for filetree_create export only (internal vars use "__" prefix)
-    __tmp_dir_export: "/tmp/aap_filetree_export"
+    __api_page_size: 10000
 
     # Connection: prefer CONTROLLER_* injected by an AAP credential when the job
     # runs on the platform; otherwise use vars/secrets.yml (ansible-vault).
-    aap_hostname: "{{ lookup('ansible.builtin.env', 'CONTROLLER_HOST') | default(vault_aap_hostname, true) }}"
-    aap_username: "{{ lookup('ansible.builtin.env', 'CONTROLLER_USERNAME') | default(vault_aap_username, true) }}"
-    aap_password: "{{ lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD') | default(vault_aap_password, true) }}"
-    aap_validate_certs: "{{ lookup('ansible.builtin.env', 'CONTROLLER_VERIFY_SSL') | default(vault_aap_validate_certs, true) | bool }}"
+    __env_controller_host: "{{ lookup('ansible.builtin.env', 'CONTROLLER_HOST') }}"
+    __env_controller_username: "{{ lookup('ansible.builtin.env', 'CONTROLLER_USERNAME') }}"
+    __env_controller_password: "{{ lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD') }}"
+    __env_controller_verify: "{{ lookup('ansible.builtin.env', 'CONTROLLER_VERIFY_SSL') }}"
+
+    aap_hostname: "{{ (__env_controller_host | length > 0) | ternary(__env_controller_host, vault_aap_hostname) }}"
+    aap_username: "{{ (__env_controller_username | length > 0) | ternary(__env_controller_username, vault_aap_username) }}"
+    aap_password: "{{ (__env_controller_password | length > 0) | ternary(__env_controller_password, vault_aap_password) }}"
+    aap_validate_certs: "{{ ((__env_controller_verify | length > 0) | ternary(__env_controller_verify, vault_aap_validate_certs)) | bool }}"
+    aap_base_url: "{{ (aap_hostname is match('^https?://')) | ternary(aap_hostname, 'https://' ~ aap_hostname) | regex_replace('/$', '') }}"
     gateway_hostname: "{{ aap_hostname }}"
     gateway_username: "{{ aap_username }}"
     gateway_password: "{{ aap_password }}"
@@ -44,9 +50,17 @@
 
   tasks:
     # -------------------------------------------------------------------------
-    # 0. Auth + export working directory
+    # 0. Auth
     # -------------------------------------------------------------------------
-    - name: Obtain OAuth token for filetree_create
+    - name: Show Gateway connection target (no secrets)
+      ansible.builtin.debug:
+        msg:
+          aap_base_url: "{{ aap_base_url }}"
+          aap_username: "{{ aap_username }}"
+          aap_validate_certs: "{{ aap_validate_certs }}"
+          using_controller_env: "{{ __env_controller_host | length > 0 }}"
+
+    - name: Obtain OAuth token for Gateway API
       ansible.platform.token:
         description: "Token for marker team role sync"
         scope: write
@@ -56,21 +70,10 @@
         aap_password: "{{ aap_password }}"
         aap_validate_certs: "{{ aap_validate_certs }}"
 
-    - name: Expose aap_token for filetree_create lookups
+    - name: Expose aap_token for modules and URI calls
       ansible.builtin.set_fact:
         aap_token: "{{ ansible_facts['aap_token'] }}"
-
-    - name: Recreate export working directory
-      ansible.builtin.file:
-        path: "{{ __tmp_dir_export }}"
-        state: "{{ __tmp_state }}"
-        mode: "0755"
-      loop:
-        - absent
-        - directory
-      loop_control:
-        loop_var: __tmp_state
-      changed_when: false
+        __oauth_token: "{{ (ansible_facts['aap_token'] is mapping) | ternary(ansible_facts['aap_token'].token, ansible_facts['aap_token']) }}"
 
     # -------------------------------------------------------------------------
     # 1. Ensure marker team + authenticator map (in-memory vars + dispatch)
@@ -107,36 +110,78 @@
             tags: [authenticator_maps, gateway_authenticator_maps]
 
     # -------------------------------------------------------------------------
-    # 2. Read current organizations and role assignments (filetree_create)
+    # 2. Read current organizations and role assignments (Gateway REST)
     # -------------------------------------------------------------------------
-    - name: Export organizations and role user assignments from AAP
-      ansible.builtin.import_role:
-        name: infra.aap_configuration_extended.filetree_create
-      vars:
-        output_path: "{{ __tmp_dir_export }}"
-        omit_id: true
-        input_tag:
-          - gateway_organizations
-          - gateway_role_user_assignments
+    - name: Fetch organizations from Gateway API
+      ansible.builtin.uri:
+        url: "{{ aap_base_url }}/api/gateway/v1/organizations/?page_size={{ __api_page_size }}&order_by=id"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ __oauth_token }}"
+        validate_certs: "{{ aap_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: __orgs_resp
+      no_log: true
 
-    - name: Load exported state with filetree_read
-      ansible.builtin.import_role:
-        name: infra.aap_configuration_extended.filetree_read
-      vars:
-        dir_orgs_vars: "{{ __tmp_dir_export }}"
-        controller_configuration_filetree_read_layout: create
+    - name: Fetch role user assignments from Gateway API
+      ansible.builtin.uri:
+        url: "{{ aap_base_url }}/api/gateway/v1/role_user_assignments/?page_size={{ __api_page_size }}&order_by=id"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ __oauth_token }}"
+        validate_certs: "{{ aap_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: __rua_resp
+      no_log: true
 
-    - name: Store exported data in internal variables
+    - name: Ensure API pages were not truncated
+      ansible.builtin.assert:
+        that:
+          - (__orgs_resp.json.next | default(none)) is none
+          - (__rua_resp.json.next | default(none)) is none
+        fail_msg: >-
+          Gateway returned a next-page link; raise __api_page_size (currently
+          {{ __api_page_size }}) so the full inventory fits in one request.
+
+    - name: Initialize normalized export lists
       ansible.builtin.set_fact:
-        __all_organizations: "{{ aap_organizations | default(gateway_organizations | default([])) }}"
-        __all_role_user_assignments: "{{ gateway_role_user_assignments | default([]) }}"
+        __all_organizations: []
+        __all_role_user_assignments: []
+
+    - name: Store organizations as name objects
+      ansible.builtin.set_fact:
+        __all_organizations: "{{ __all_organizations + [{'name': __org_item.name}] }}"
+      loop: "{{ __orgs_resp.json.results | default([]) }}"
+      loop_control:
+        loop_var: __org_item
+        label: "{{ __org_item.name }}"
+
+    - name: Store role user assignments in dispatch-compatible shape
+      ansible.builtin.set_fact:
+        __all_role_user_assignments: "{{ __all_role_user_assignments + [__assignment] }}"
+      loop: "{{ __rua_resp.json.results | default([]) }}"
+      loop_control:
+        loop_var: __rua
+        label: "{{ __rua.summary_fields.role_definition.name | default('?') }} / {{ __rua.summary_fields.user.username | default('?') }}"
+      when:
+        - __rua.summary_fields.role_definition.name | default('') is not match('^galaxy\\.')
+        - __rua.summary_fields.user.username is defined
+        - (__rua.summary_fields.resource.name | default('') | length) > 0
+      vars:
+        __assignment:
+          role_definition: "{{ __rua.summary_fields.role_definition.name }}"
+          user: "{{ __rua.summary_fields.user.username }}"
+          object_ids:
+            - "{{ __rua.summary_fields.resource.name }}"
 
     # -------------------------------------------------------------------------
     # 3. Extract current marker team members
     # -------------------------------------------------------------------------
     - name: Collect marker team member usernames (Team Member assignments)
       ansible.builtin.set_fact:
-        __marker_team_members: "{{ __all_role_user_assignments
+        __marker_team_members: "{{ __all_role_user_assignments | default([])
           | selectattr('role_definition', 'equalto', team_member_role)
           | selectattr('object_ids', 'contains', marker_team_name)
           | map(attribute='user')
@@ -171,7 +216,7 @@
 
     - name: Compute assignments to revoke (users no longer in the marker team)
       ansible.builtin.set_fact:
-        __roles_to_revoke: "{{ __all_role_user_assignments
+        __roles_to_revoke: "{{ __all_role_user_assignments | default([])
           | selectattr('role_definition', 'equalto', target_role)
           | rejectattr('user', 'in', __marker_team_members)
           | map('combine', {'state': 'absent'})
@@ -192,9 +237,3 @@
           - role: gateway_role_user_assignments
             var: gateway_role_user_assignments
             tags: [role_user_assignments, gateway_role_user_assignments]
-
-    - name: Remove export working directory
-      ansible.builtin.file:
-        path: "{{ __tmp_dir_export }}"
-        state: absent
-      changed_when: false
