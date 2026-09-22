@@ -166,15 +166,16 @@
         loop_var: __rua
         label: "{{ __rua.summary_fields.role_definition.name | default('?') }} / {{ __rua.summary_fields.user.username | default('?') }}"
       when:
+        # Gateway exposes the target as summary_fields.content_object (not .resource)
         - __rua.summary_fields.role_definition.name | default('') is not match('^galaxy\\.')
         - __rua.summary_fields.user.username is defined
-        - (__rua.summary_fields.resource.name | default('') | length) > 0
+        - (__rua.summary_fields.content_object.name | default('') | length) > 0
       vars:
         __assignment:
           role_definition: "{{ __rua.summary_fields.role_definition.name }}"
           user: "{{ __rua.summary_fields.user.username }}"
           object_ids:
-            - "{{ __rua.summary_fields.resource.name }}"
+            - "{{ __rua.summary_fields.content_object.name }}"
 
     # -------------------------------------------------------------------------
     # 3. Extract current marker team members
