@@ -24,14 +24,14 @@
     ge_schedule_name: "Sync Marker Team Roles hourly"
     ge_playbook: "sync_marker_team_roles.yml"
 
-    # Public GitHub repo — no Source Control credential required
-    project_scm_url: "https://github.com/automationiberia/aap-global-executor.git"
+    # Public Git repo — no Source Control credential required when the repo is public
+    project_scm_url: "https://github.com/EXAMPLE_ORG/aap-global-executor.git"
     project_scm_branch: "main"
 
     # Existing AAP credentials / EE (names must match objects already on AAP)
-    ge_vault_credential: "demo vault credential"
-    ge_aap_api_credential: "aap26gw1.bcnconsulting.com"
-    ge_execution_environment: "my_ee"
+    ge_vault_credential: "CHANGE_ME_VAULT_CREDENTIAL"
+    ge_aap_api_credential: "CHANGE_ME_AAP_API_CREDENTIAL"
+    ge_execution_environment: "CHANGE_ME_EE"
 
     # Connection from vars/secrets.yml (ansible-vault)
     aap_hostname: "{{ vault_aap_hostname }}"

@@ -109,10 +109,10 @@ Creates:
 Edit the bootstrap vars first so names match **your** AAP objects:
 
 ```yaml
-ge_vault_credential: "demo vault credential"      # existing Vault credential name
-ge_aap_api_credential: "aap26gw1.bcnconsulting.com"  # existing AAP/API credential name
-ge_execution_environment: "my_ee"                 # existing EE name
-project_scm_url: "https://github.com/automationiberia/aap-global-executor.git"
+ge_vault_credential: "CHANGE_ME_VAULT_CREDENTIAL"       # existing Vault credential name
+ge_aap_api_credential: "CHANGE_ME_AAP_API_CREDENTIAL"   # existing AAP/API credential name
+ge_execution_environment: "CHANGE_ME_EE"                # existing EE name
+project_scm_url: "https://github.com/EXAMPLE_ORG/aap-global-executor.git"
 ```
 
 Then run:
