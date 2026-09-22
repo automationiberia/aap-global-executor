@@ -1,17 +1,10 @@
 ---
-# Bootstrap AAP objects so sync_marker_team_roles.yml can run on the platform.
-#
-# Phase 1 (default): inventory, localhost host, manual project.
-# Phase 2 (-e ge_configure_job_template=true): job template + hourly schedule.
-#   Run phase 2 only after the project has Git + credential configured and synced
-#   so sync_marker_team_roles.yml is visible to AAP.
-#
-# Placeholders still pending after Git publish:
-#   - project_scm_credential   (Source Control credential name)
-#   - ge_aap_api_credential    (Red Hat Ansible Automation Platform credential name)
+# Bootstrap AAP objects so sync_marker_team_roles.yml can run on the platform
+# (inventory, public Git project, job template, hourly schedule).
 #
 # Secrets: copy vars/secrets.yml.example → vars/secrets.yml, fill values, encrypt with
-# ansible-vault (vars/secrets.yml is gitignored).
+# ansible-vault (vars/secrets.yml is gitignored). Attach the Vault credential to the
+# job template so AAP can decrypt vars/secrets.yml at runtime.
 
 - name: Bootstrap AAP runner for Global Executor role sync
   hosts: localhost
@@ -30,14 +23,12 @@
     ge_schedule_name: "Sync Marker Team Roles hourly"
     ge_playbook: "sync_marker_team_roles.yml"
 
-    # Set true after Git remote is published, SCM credential attached, and project synced
-    ge_configure_job_template: false
-
-    # --- Placeholders: replace credential names after you create them in AAP ---
+    # Public GitHub repo — no Source Control credential required
     project_scm_url: "https://github.com/automationiberia/aap-global-executor.git"
     project_scm_branch: "main"
-    project_scm_credential: "CHANGE_ME - Global Executor SCM"
-    ge_aap_api_credential: "CHANGE_ME - Global Executor AAP API"
+
+    # Existing AAP Vault credential (decrypts vars/secrets.yml on the job)
+    ge_vault_credential: "demo vault credential"
 
     # Connection from vars/secrets.yml (ansible-vault)
     aap_hostname: "{{ vault_aap_hostname }}"
@@ -72,19 +63,19 @@
       ansible.builtin.set_fact:
         controller_projects:
           - name: "{{ ge_project_name }}"
-            description: >-
-              Source for {{ ge_playbook }}.
-              PLACEHOLDERS — scm_url={{ project_scm_url }};
-              scm_branch={{ project_scm_branch }};
-              scm_credential={{ project_scm_credential }};
-              aap_api_credential={{ ge_aap_api_credential }}.
+            description: "Source for {{ ge_playbook }} (public GitHub repo)"
             organization: "{{ ge_organization }}"
-            # Manual until Git remote + Source Control credential are ready
-            scm_type: manual
-            update_project: false
+            scm_type: git
+            scm_url: "{{ project_scm_url }}"
+            scm_branch: "{{ project_scm_branch }}"
+            scm_clean: true
+            scm_delete_on_update: false
+            scm_update_on_launch: true
+            scm_update_cache_timeout: 0
+            allow_override: true
+            update_project: true
 
     - name: Define job template in memory
-      when: ge_configure_job_template | bool
       ansible.builtin.set_fact:
         controller_templates:
           - name: "{{ ge_job_template_name }}"
@@ -94,7 +85,7 @@
             playbook: "{{ ge_playbook }}"
             inventory: "{{ ge_inventory_name }}"
             credentials:
-              - "{{ ge_aap_api_credential }}"
+              - "{{ ge_vault_credential }}"
             job_type: run
             ask_credential_on_launch: false
             ask_inventory_on_launch: false
@@ -102,7 +93,6 @@
             verbosity: 0
 
     - name: Define hourly schedule in memory
-      when: ge_configure_job_template | bool
       ansible.builtin.set_fact:
         controller_schedules:
           - name: "{{ ge_schedule_name }}"
@@ -111,11 +101,11 @@
             rrule: "DTSTART;TZID=Europe/Madrid:20260922T000000 RRULE:FREQ=HOURLY;INTERVAL=1"
             enabled: true
 
-    - name: Build dispatcher role list for this phase
-      ansible.builtin.set_fact:
-        __dispatch_roles: "{{ __base_roles + (__job_roles if (ge_configure_job_template | bool) else []) }}"
+    - name: Dispatch Global Executor runner objects
+      ansible.builtin.include_role:
+        name: infra.aap_configuration.dispatch
       vars:
-        __base_roles:
+        aap_configuration_dispatcher_roles:
           - role: controller_inventories
             var: controller_inventories
             tags: [inventories, controller_inventories]
@@ -125,7 +115,6 @@
           - role: controller_projects
             var: controller_projects
             tags: [projects, controller_projects]
-        __job_roles:
           - role: controller_job_templates
             var: controller_templates
             tags: [job_templates, controller_job_templates]
@@ -133,27 +122,13 @@
             var: controller_schedules
             tags: [schedules, controller_schedules]
 
-    - name: Dispatch Global Executor runner objects
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.dispatch
-      vars:
-        aap_configuration_dispatcher_roles: "{{ __dispatch_roles }}"
-
-    - name: Show created objects and remaining placeholders
+    - name: Show created runner objects
       ansible.builtin.debug:
         msg:
-          phase: "{{ 'job_template+schedule' if (ge_configure_job_template | bool) else 'inventory+project' }}"
           organization: "{{ ge_organization }}"
           inventory: "{{ ge_inventory_name }}"
-          project: "{{ ge_project_name }} (scm_type=manual)"
+          project: "{{ ge_project_name }}"
           project_scm_url: "{{ project_scm_url }}"
-          project_scm_credential: "{{ project_scm_credential }}"
-          aap_api_credential: "{{ ge_aap_api_credential }}"
-          job_template: "{{ ge_job_template_name if (ge_configure_job_template | bool) else 'skipped (set -e ge_configure_job_template=true after SCM sync)' }}"
-          schedule: "{{ ge_schedule_name if (ge_configure_job_template | bool) else 'skipped until job template exists' }}"
-          next_steps:
-            - "Publish this Git repo"
-            - "Create Source Control credential '{{ project_scm_credential }}'"
-            - "Create AAP API credential '{{ ge_aap_api_credential }}' (type: Red Hat Ansible Automation Platform)"
-            - "Edit project '{{ ge_project_name }}': scm_type=git, url={{ project_scm_url }}, branch={{ project_scm_branch }}, credential={{ project_scm_credential }}; then Sync"
-            - "Re-run: ansible-playbook bootstrap_aap_runner.yml -e ge_configure_job_template=true -e ge_aap_api_credential='...'"
+          vault_credential: "{{ ge_vault_credential }}"
+          job_template: "{{ ge_job_template_name }}"
+          schedule: "{{ ge_schedule_name }} (hourly)"
