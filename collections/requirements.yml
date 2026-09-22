@@ -4,8 +4,6 @@ collections:
     version: ">=3.0.0"
   - name: infra.aap_configuration_extended
     version: ">=3.0.0"
-  - name: community.general
-    version: ">=8.0.0"
   - name: ansible.platform
     version: ">=2.5.0"
   - name: ansible.controller
