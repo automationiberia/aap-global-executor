@@ -28,7 +28,7 @@
     project_scm_url: "https://github.com/automationiberia/aap-global-executor.git"
     project_scm_branch: "main"
 
-    # Existing AAP credentials / EE
+    # Existing AAP credentials / EE (names must match objects already on AAP)
     ge_vault_credential: "demo vault credential"
     ge_aap_api_credential: "aap26gw1.bcnconsulting.com"
     ge_execution_environment: "my_ee"

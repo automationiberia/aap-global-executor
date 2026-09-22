@@ -27,7 +27,7 @@
     marker_map_triggers:
       groups:
         has_or:
-          - CN=crossexecutors,CN=Users,DC=win,DC=iam,DC=lab
+          - CN=cross-executors,CN=Users,DC=example,DC=com
 
     __api_page_size: 10000
 
