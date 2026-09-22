@@ -3,8 +3,9 @@
 # (inventory, public Git project, job template, hourly schedule).
 #
 # Secrets: copy vars/secrets.yml.example → vars/secrets.yml, fill values, encrypt with
-# ansible-vault (vars/secrets.yml is gitignored). Attach the Vault credential to the
-# job template so AAP can decrypt vars/secrets.yml at runtime.
+# ansible-vault (vars/secrets.yml is gitignored). Job template attaches:
+#   - Vault credential → decrypt vars/secrets.yml
+#   - AAP API credential → CONTROLLER_* for platform API calls
 
 - name: Bootstrap AAP runner for Global Executor role sync
   hosts: localhost
@@ -27,8 +28,9 @@
     project_scm_url: "https://github.com/automationiberia/aap-global-executor.git"
     project_scm_branch: "main"
 
-    # Existing AAP Vault credential (decrypts vars/secrets.yml on the job)
+    # Existing AAP credentials
     ge_vault_credential: "demo vault credential"
+    ge_aap_api_credential: "aap26gw1.bcnconsulting.com"
 
     # Connection from vars/secrets.yml (ansible-vault)
     aap_hostname: "{{ vault_aap_hostname }}"
@@ -86,6 +88,7 @@
             inventory: "{{ ge_inventory_name }}"
             credentials:
               - "{{ ge_vault_credential }}"
+              - "{{ ge_aap_api_credential }}"
             job_type: run
             ask_credential_on_launch: false
             ask_inventory_on_launch: false
@@ -130,5 +133,6 @@
           project: "{{ ge_project_name }}"
           project_scm_url: "{{ project_scm_url }}"
           vault_credential: "{{ ge_vault_credential }}"
+          aap_api_credential: "{{ ge_aap_api_credential }}"
           job_template: "{{ ge_job_template_name }}"
           schedule: "{{ ge_schedule_name }} (hourly)"
