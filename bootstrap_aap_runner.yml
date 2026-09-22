@@ -1,0 +1,159 @@
+---
+# Bootstrap AAP objects so sync_marker_team_roles.yml can run on the platform.
+#
+# Phase 1 (default): inventory, localhost host, manual project.
+# Phase 2 (-e ge_configure_job_template=true): job template + hourly schedule.
+#   Run phase 2 only after the project has Git + credential configured and synced
+#   so sync_marker_team_roles.yml is visible to AAP.
+#
+# Placeholders still pending after Git publish:
+#   - project_scm_credential   (Source Control credential name)
+#   - ge_aap_api_credential    (Red Hat Ansible Automation Platform credential name)
+#
+# Secrets: copy vars/secrets.yml.example → vars/secrets.yml, fill values, encrypt with
+# ansible-vault (vars/secrets.yml is gitignored).
+
+- name: Bootstrap AAP runner for Global Executor role sync
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - vars/secrets.yml
+
+  vars:
+    # --- Object names / placement ---
+    ge_organization: "Global Operations"
+    ge_inventory_name: "Global Executor Inventory"
+    ge_project_name: "Global Executor"
+    ge_job_template_name: "Sync Marker Team Roles"
+    ge_schedule_name: "Sync Marker Team Roles hourly"
+    ge_playbook: "sync_marker_team_roles.yml"
+
+    # Set true after Git remote is published, SCM credential attached, and project synced
+    ge_configure_job_template: false
+
+    # --- Placeholders: replace credential names after you create them in AAP ---
+    project_scm_url: "https://github.com/automationiberia/aap-global-executor.git"
+    project_scm_branch: "main"
+    project_scm_credential: "CHANGE_ME - Global Executor SCM"
+    ge_aap_api_credential: "CHANGE_ME - Global Executor AAP API"
+
+    # Connection from vars/secrets.yml (ansible-vault)
+    aap_hostname: "{{ vault_aap_hostname }}"
+    aap_username: "{{ vault_aap_username }}"
+    aap_password: "{{ vault_aap_password }}"
+    aap_validate_certs: "{{ vault_aap_validate_certs }}"
+    gateway_hostname: "{{ aap_hostname }}"
+    gateway_username: "{{ aap_username }}"
+    gateway_password: "{{ aap_password }}"
+    gateway_validate_certs: "{{ aap_validate_certs }}"
+    aap_configuration_async_dir: /tmp/ansible-async-ge
+
+  tasks:
+    - name: Define inventory in memory
+      ansible.builtin.set_fact:
+        controller_inventories:
+          - name: "{{ ge_inventory_name }}"
+            organization: "{{ ge_organization }}"
+            description: "Local inventory used to run Global Executor sync jobs"
+
+    - name: Define localhost host in memory
+      ansible.builtin.set_fact:
+        controller_hosts:
+          - name: localhost
+            inventory: "{{ ge_inventory_name }}"
+            description: "Control node target for API-only Global Executor playbooks"
+            variables:
+              ansible_connection: local
+              ansible_python_interpreter: "{{ '{{' }} ansible_playbook_python {{ '}}' }}"
+
+    - name: Define project in memory
+      ansible.builtin.set_fact:
+        controller_projects:
+          - name: "{{ ge_project_name }}"
+            description: >-
+              Source for {{ ge_playbook }}.
+              PLACEHOLDERS — scm_url={{ project_scm_url }};
+              scm_branch={{ project_scm_branch }};
+              scm_credential={{ project_scm_credential }};
+              aap_api_credential={{ ge_aap_api_credential }}.
+            organization: "{{ ge_organization }}"
+            # Manual until Git remote + Source Control credential are ready
+            scm_type: manual
+            update_project: false
+
+    - name: Define job template in memory
+      when: ge_configure_job_template | bool
+      ansible.builtin.set_fact:
+        controller_templates:
+          - name: "{{ ge_job_template_name }}"
+            description: "Sync Organization Execute for marker-team members across all organizations"
+            organization: "{{ ge_organization }}"
+            project: "{{ ge_project_name }}"
+            playbook: "{{ ge_playbook }}"
+            inventory: "{{ ge_inventory_name }}"
+            credentials:
+              - "{{ ge_aap_api_credential }}"
+            job_type: run
+            ask_credential_on_launch: false
+            ask_inventory_on_launch: false
+            ask_variables_on_launch: false
+            verbosity: 0
+
+    - name: Define hourly schedule in memory
+      when: ge_configure_job_template | bool
+      ansible.builtin.set_fact:
+        controller_schedules:
+          - name: "{{ ge_schedule_name }}"
+            description: "Run Sync Marker Team Roles every hour"
+            unified_job_template: "{{ ge_job_template_name }}"
+            rrule: "DTSTART;TZID=Europe/Madrid:20260922T000000 RRULE:FREQ=HOURLY;INTERVAL=1"
+            enabled: true
+
+    - name: Build dispatcher role list for this phase
+      ansible.builtin.set_fact:
+        __dispatch_roles: "{{ __base_roles + (__job_roles if (ge_configure_job_template | bool) else []) }}"
+      vars:
+        __base_roles:
+          - role: controller_inventories
+            var: controller_inventories
+            tags: [inventories, controller_inventories]
+          - role: controller_hosts
+            var: controller_hosts
+            tags: [hosts, controller_hosts]
+          - role: controller_projects
+            var: controller_projects
+            tags: [projects, controller_projects]
+        __job_roles:
+          - role: controller_job_templates
+            var: controller_templates
+            tags: [job_templates, controller_job_templates]
+          - role: controller_schedules
+            var: controller_schedules
+            tags: [schedules, controller_schedules]
+
+    - name: Dispatch Global Executor runner objects
+      ansible.builtin.include_role:
+        name: infra.aap_configuration.dispatch
+      vars:
+        aap_configuration_dispatcher_roles: "{{ __dispatch_roles }}"
+
+    - name: Show created objects and remaining placeholders
+      ansible.builtin.debug:
+        msg:
+          phase: "{{ 'job_template+schedule' if (ge_configure_job_template | bool) else 'inventory+project' }}"
+          organization: "{{ ge_organization }}"
+          inventory: "{{ ge_inventory_name }}"
+          project: "{{ ge_project_name }} (scm_type=manual)"
+          project_scm_url: "{{ project_scm_url }}"
+          project_scm_credential: "{{ project_scm_credential }}"
+          aap_api_credential: "{{ ge_aap_api_credential }}"
+          job_template: "{{ ge_job_template_name if (ge_configure_job_template | bool) else 'skipped (set -e ge_configure_job_template=true after SCM sync)' }}"
+          schedule: "{{ ge_schedule_name if (ge_configure_job_template | bool) else 'skipped until job template exists' }}"
+          next_steps:
+            - "Publish this Git repo"
+            - "Create Source Control credential '{{ project_scm_credential }}'"
+            - "Create AAP API credential '{{ ge_aap_api_credential }}' (type: Red Hat Ansible Automation Platform)"
+            - "Edit project '{{ ge_project_name }}': scm_type=git, url={{ project_scm_url }}, branch={{ project_scm_branch }}, credential={{ project_scm_credential }}; then Sync"
+            - "Re-run: ansible-playbook bootstrap_aap_runner.yml -e ge_configure_job_template=true -e ge_aap_api_credential='...'"

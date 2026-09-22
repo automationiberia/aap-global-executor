@@ -1,0 +1,7 @@
+*.retry
+.ansible/
+__pycache__/
+*.pyc
+.vault_pass
+.bare.git/
+vars/secrets.yml
