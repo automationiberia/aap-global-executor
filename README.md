@@ -32,17 +32,14 @@ LDAP / IdP group ──► Authenticator map ──► Marker team membership
 ```
 
 1. **Ensure** the marker team and authenticator map exist (`infra.aap_configuration.dispatch`).
-2. **Read** all organizations and role-user assignments from the Gateway API via
-   `ansible.builtin.uri` (Bearer token).
+2. **Export** organizations and role-user assignments from the live AAP instance with
+   `infra.aap_configuration_extended.filetree_create`, then load them with
+   `filetree_read`.
 3. **Derive** marker-team members from assignments with role `Team Member` on the
    marker team object.
 4. **Compute** desired `Organization Execute` assignments (member × organization)
    and revocations for users who left the team.
 5. **Apply** the payload with `gateway_role_user_assignments`.
-
-Reads intentionally avoid `infra.aap_configuration_extended.filetree_create` /
-`ansible.platform.gateway_api` lookups, which are unreliable inside many execution
-environments.
 
 ## Prerequisites
 
@@ -145,6 +142,7 @@ Required job template attachments:
 See `collections/requirements.yml`:
 
 - `infra.aap_configuration` — dispatch / gateway object roles
+- `infra.aap_configuration_extended` — `filetree_create` / `filetree_read` export
 - `ansible.platform` — token and Gateway modules
 - `ansible.controller` — controller objects used by bootstrap
 
