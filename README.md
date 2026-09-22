@@ -136,6 +136,9 @@ Required job template attachments:
 1. Vault credential → decrypts `vars/secrets.yml`
 2. AAP API credential → injects `CONTROLLER_*` for Gateway calls
 3. Execution environment able to call the Gateway HTTPS endpoint
+4. Project collection install enabled so `collections/requirements.yml` is
+   applied to the job (required for a working `ansible.platform` with
+   `filetree_create` / `gateway_api`)
 
 ## Collections
 
@@ -143,8 +146,13 @@ See `collections/requirements.yml`:
 
 - `infra.aap_configuration` — dispatch / gateway object roles
 - `infra.aap_configuration_extended` — `filetree_create` / `filetree_read` export
-- `ansible.platform` — token and Gateway modules
+- `ansible.platform` (`>=2.7.20260812`) — token + `gateway_api` lookup used by
+  `filetree_create` (older builds fail with a misleading `retryable` error)
 - `ansible.controller` — controller objects used by bootstrap
+
+Before `filetree_create`, the sync playbook applies a small in-place patch to the
+loaded `ansible.platform` copy so base `PlatformError` always defines
+`retryable` (upstream bug in the HTTP retry helper).
 
 ## Security notes
 

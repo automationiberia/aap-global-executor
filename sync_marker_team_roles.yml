@@ -38,7 +38,9 @@
     __env_controller_password: "{{ lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD') }}"
     __env_controller_verify: "{{ lookup('ansible.builtin.env', 'CONTROLLER_VERIFY_SSL') }}"
 
-    aap_hostname: "{{ (__env_controller_host | length > 0) | ternary(__env_controller_host, vault_aap_hostname) }}"
+    __aap_hostname_raw: "{{ ((__env_controller_host | length > 0) | ternary(__env_controller_host, vault_aap_hostname)) | regex_replace('/$', '') }}"
+    # gateway_api / filetree_create expect a URL scheme
+    aap_hostname: "{{ (__aap_hostname_raw is match('^https?://')) | ternary(__aap_hostname_raw, 'https://' ~ __aap_hostname_raw) }}"
     aap_username: "{{ (__env_controller_username | length > 0) | ternary(__env_controller_username, vault_aap_username) }}"
     aap_password: "{{ (__env_controller_password | length > 0) | ternary(__env_controller_password, vault_aap_password) }}"
     aap_validate_certs: "{{ ((__env_controller_verify | length > 0) | ternary(__env_controller_verify, vault_aap_validate_certs)) | bool }}"
@@ -69,9 +71,14 @@
         aap_password: "{{ aap_password }}"
         aap_validate_certs: "{{ aap_validate_certs }}"
 
-    - name: Expose aap_token for filetree_create lookups
+    - name: Expose OAuth token string for filetree_create gateway_api lookups
       ansible.builtin.set_fact:
-        aap_token: "{{ ansible_facts['aap_token'] }}"
+        # Plain string — filetree_create accepts aap_token or aap_oauthtoken
+        aap_token: "{{ (ansible_facts['aap_token'] is mapping) | ternary(ansible_facts['aap_token'].token, ansible_facts['aap_token']) }}"
+        aap_oauthtoken: "{{ (ansible_facts['aap_token'] is mapping) | ternary(ansible_facts['aap_token'].token, ansible_facts['aap_token']) }}"
+
+    - name: Patch ansible.platform retryable bug before filetree_create
+      ansible.builtin.include_tasks: tasks/patch_ansible_platform_retryable.yml
 
     - name: Recreate export working directory
       ansible.builtin.file:

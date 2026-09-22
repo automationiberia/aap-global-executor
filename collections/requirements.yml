@@ -4,7 +4,9 @@ collections:
     version: ">=3.0.0"
   - name: infra.aap_configuration_extended
     version: ">=3.0.0"
+  # Pin: older builds break filetree_create via gateway_api
+  # ("PlatformError' object has no attribute 'retryable'" / malformed URLs).
   - name: ansible.platform
-    version: ">=2.5.0"
+    version: ">=2.7.20260812"
   - name: ansible.controller
     version: ">=4.5.0"
