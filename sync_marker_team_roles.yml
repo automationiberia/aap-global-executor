@@ -23,10 +23,13 @@
 
     marker_map_name: "Cross Executors membership"
     marker_map_authenticator: "AD LDAP"
+    # Override on the Job Template (Extra Variables) or with -e:
+    #   marker_ldap_group_cn: "CN=mygroup,CN=Users,DC=example,DC=com"
+    marker_ldap_group_cn: "CN=cross-executors,CN=Users,DC=example,DC=com"
     marker_map_triggers:
       groups:
         has_or:
-          - CN=cross-executors,CN=Users,DC=example,DC=com
+          - "{{ marker_ldap_group_cn }}"
 
     # Temp dir for filetree_create export only (internal vars use "__" prefix)
     __tmp_dir_export: "/tmp/aap_filetree_export"

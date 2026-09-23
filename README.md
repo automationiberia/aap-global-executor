@@ -90,9 +90,19 @@ Set these in `sync_marker_team_roles.yml` (or override with `-e` / extra vars):
 | `team_member_role` | `Team Member` | Role used to detect team membership |
 | `marker_map_name` | `Cross Executors membership` | Authenticator map name |
 | `marker_map_authenticator` | `AD LDAP` | Existing authenticator name on Gateway |
-| `marker_map_triggers` | LDAP group DN example | Authenticator map triggers |
+| `marker_ldap_group_cn` | `CN=cross-executors,CN=Users,DC=example,DC=com` | AD/LDAP group DN used by the authenticator map (`groups.has_or`) |
 
-Adjust the LDAP group DN under `marker_map_triggers` to match your directory.
+### Job Template extra var (recommended)
+
+Keep the generic default in git, and set your real group on the Job Template
+under **Variables** (or pass `-e` locally):
+
+```yaml
+marker_ldap_group_cn: "CN=crossexecutors,CN=Users,DC=example,DC=com"
+```
+
+Scheduled runs pick up Job Template variables automatically; no prompt-on-launch
+is required.
 
 ## Bootstrap (create AAP runner objects)
 
