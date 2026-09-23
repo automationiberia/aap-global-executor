@@ -38,8 +38,10 @@ LDAP / IdP group ──► Authenticator map ──► Marker team membership
 3. **Derive** marker-team members from assignments with role `Team Member` on the
    marker team object.
 4. **Compute** desired `Organization Execute` assignments (member × organization)
-   and revocations for users who left the team.
-5. **Apply** the payload with `gateway_role_user_assignments`.
+   and revocations for users who left the team. Assignments already present in the
+   exported state are skipped (delta only).
+5. **Apply** the remaining payload with `gateway_role_user_assignments` (or skip
+   dispatch entirely when there is nothing to change).
 
 ## Prerequisites
 

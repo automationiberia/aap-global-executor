@@ -200,12 +200,52 @@
           | map('combine', {'state': 'absent'})
           | list }}"
 
+    - name: Index existing target-role assignment keys (user::organization)
+      ansible.builtin.set_fact:
+        __existing_target_keys: "{{ __existing_target_keys | default([]) + [__key] }}"
+      loop: "{{ __all_role_user_assignments | selectattr('role_definition', 'equalto', target_role) | list }}"
+      loop_control:
+        loop_var: __existing
+        label: "{{ __existing.user | default('?') }} / {{ __existing.object_ids | default([undefined]) | first }}"
+      vars:
+        __key: "{{ __existing.user }}::{{ __existing.object_ids | first }}"
+
+    - name: Ensure existing-key index is defined when none exist yet
+      ansible.builtin.set_fact:
+        __existing_target_keys: []
+      when: __existing_target_keys is not defined
+
+    - name: Keep only desired assignments missing from the exported state
+      ansible.builtin.set_fact:
+        __roles_to_create: "{{ __roles_to_create | default([]) + [__desired] }}"
+      loop: "{{ __desired_roles }}"
+      loop_control:
+        loop_var: __desired
+        label: "{{ __desired.user }} / {{ __desired.object_ids | first }}"
+      when: "(__desired.user ~ '::' ~ (__desired.object_ids | first)) not in __existing_target_keys"
+
+    - name: Ensure create list is defined when everything is already in sync
+      ansible.builtin.set_fact:
+        __roles_to_create: []
+      when: __roles_to_create is not defined
+
     # -------------------------------------------------------------------------
     # 5. Apply present + absent role assignments (in-memory + dispatch)
     # -------------------------------------------------------------------------
-    - name: Define role sync payload in memory
+    - name: Define role sync payload (delta only)
       ansible.builtin.set_fact:
-        gateway_role_user_assignments: "{{ __desired_roles + __roles_to_revoke }}"
+        gateway_role_user_assignments: "{{ __roles_to_create + __roles_to_revoke }}"
+
+    - name: Show role sync delta
+      ansible.builtin.debug:
+        msg:
+          marker_members: "{{ __marker_team_members | length }}"
+          organizations: "{{ __org_names | length }}"
+          desired_total: "{{ __desired_roles | length }}"
+          already_present: "{{ (__desired_roles | length) - (__roles_to_create | length) }}"
+          to_create: "{{ __roles_to_create | length }}"
+          to_revoke: "{{ __roles_to_revoke | length }}"
+          dispatch_items: "{{ gateway_role_user_assignments | length }}"
 
     - name: Apply and purge role assignments via dispatch
       ansible.builtin.include_role:
@@ -215,6 +255,12 @@
           - role: gateway_role_user_assignments
             var: gateway_role_user_assignments
             tags: [role_user_assignments, gateway_role_user_assignments]
+      when: (gateway_role_user_assignments | length) > 0
+
+    - name: Skip dispatch when exported state already matches desired
+      ansible.builtin.debug:
+        msg: "No role assignment changes required; skipping gateway_role_user_assignments dispatch."
+      when: (gateway_role_user_assignments | length) == 0
 
     - name: Remove export working directory
       ansible.builtin.file:
