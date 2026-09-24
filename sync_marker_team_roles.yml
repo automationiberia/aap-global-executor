@@ -178,22 +178,45 @@
           - gateway_users
           - gateway_role_user_assignments
 
-    # filetree_read's include_vars crashes on gateway_users.yaml
-    # ("unsupported operand type(s) for |=: 'bool' and 'str'"). Move the file
-    # aside, load usernames ourselves, then let filetree_read load the rest.
-    - name: Stage exported Gateway users file for safe parsing
-      ansible.builtin.copy:
-        src: "{{ __tmp_dir_export }}/gateway_users.yaml"
-        dest: "{{ __tmp_dir_export }}/.gateway_users_for_sync.yaml"
-        remote_src: true
-        mode: "0644"
-      failed_when: false
+    # filetree_create writes a rich gateway_users.yaml (passwords, authenticators,
+    # quoted bools, …). filetree_read's include_vars crashes on that file
+    # ("unsupported operand type(s) for |=: 'bool' and 'str'"). Rewrite it to a
+    # minimal username-only document, then load it with filetree_read like orgs.
+    - name: Normalize gateway_users.yaml to username-only for filetree_read
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import pathlib
+        import re
 
-    - name: Remove gateway_users.yaml so filetree_read skips it
-      ansible.builtin.file:
-        path: "{{ __tmp_dir_export }}/gateway_users.yaml"
-        state: absent
-      failed_when: false
+        path = pathlib.Path("{{ __tmp_dir_export }}/gateway_users.yaml")
+        if not path.is_file():
+            path.write_text("---\naap_user_accounts: []\n...\n", encoding="utf-8")
+            print(0)
+            raise SystemExit(0)
+
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found = re.findall(r'(?m)^\s*-?\s*username:\s*"?([^"\n#]+?)"?\s*$', text)
+        users = []
+        seen = set()
+        for raw in found:
+            name = raw.strip().strip("'")
+            if name and name not in seen:
+                seen.add(name)
+                users.append(name)
+
+        lines = ["---", "aap_user_accounts:"]
+        if users:
+            for name in users:
+                lines.append('  - username: "%s"' % name.replace('"', '\\"'))
+        else:
+            lines.append("  []")
+        lines.append("...")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(len(users))
+        PY
+      register: __gateway_users_normalized
+      changed_when: false
 
     - name: Load exported state with filetree_read
       ansible.builtin.import_role:
@@ -202,44 +225,12 @@
         dir_orgs_vars: "{{ __tmp_dir_export }}"
         controller_configuration_filetree_read_layout: create
 
-    - name: Read staged Gateway users export
-      ansible.builtin.slurp:
-        src: "{{ __tmp_dir_export }}/.gateway_users_for_sync.yaml"
-      register: __gateway_users_slurp
-      failed_when: false
-
-    - name: Extract AAP usernames from staged Gateway users export
-      ansible.builtin.command:
-        argv:
-          - python3
-          - -c
-          - |
-            import sys
-            try:
-                import yaml
-            except ImportError:
-                sys.exit(0)
-            path = sys.argv[1]
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    doc = yaml.safe_load(fh) or {}
-            except Exception:
-                doc = {}
-            for entry in doc.get("aap_user_accounts") or []:
-                if isinstance(entry, dict) and entry.get("username"):
-                    print(entry["username"])
-          - "{{ __tmp_dir_export }}/.gateway_users_for_sync.yaml"
-      register: __aap_users_extract
-      changed_when: false
-      failed_when: false
-      when: __gateway_users_slurp.content is defined
-
     - name: Store exported data in internal variables
       ansible.builtin.set_fact:
         __all_organizations: "{{ aap_organizations | default(gateway_organizations | default([])) }}"
         __all_role_user_assignments: "{{ gateway_role_user_assignments | default([]) }}"
         __org_names: "{{ (aap_organizations | default(gateway_organizations | default([]))) | map(attribute='name') | list }}"
-        __aap_usernames: "{{ (__aap_users_extract.stdout_lines | default([])) if (__aap_users_extract is defined) else [] }}"
+        __aap_usernames: "{{ (aap_user_accounts | default([])) | map(attribute='username') | list }}"
 
     # Users who never logged into AAP are not in Gateway yet; role assign/revoke
     # would fail with "User lookup failed". Skip them until they exist.
@@ -253,6 +244,7 @@
     - name: Show AAP presence filter
       ansible.builtin.debug:
         msg:
+          gateway_users_normalized: "{{ __gateway_users_normalized.stdout | default('0') }}"
           aap_users_exported: "{{ __aap_usernames | length }}"
           aap_present_listed: "{{ ge_executor_user_list | select('in', __aap_usernames) | list }}"
           skipped_absent_from_aap: "{{ __skipped_absent_from_aap }}"

@@ -48,8 +48,9 @@ GE_EXECUTOR_USERS (env) ──► candidate usernames
    or `ldapsearch` fallback)
    and evaluate account flags.
 3. Export organizations, Gateway users, and role-user assignments with
-   `infra.aap_configuration_extended.filetree_create` / `filetree_read`
-   (usernames are taken from the users export; no extra Gateway API calls).
+   `filetree_create`. Normalize `gateway_users.yaml` to username-only (raw
+   export breaks `filetree_read` include_vars), then load everything with
+   `filetree_read`.
 4. Drop candidates that do not exist in AAP yet (no login → no Gateway user).
 5. Compute a **delta** of creates and revokes vs the exported state.
 6. Apply with `gateway_role_user_assignments` (skipped when empty).
