@@ -24,3 +24,4 @@
   ansible.builtin.set_fact:
     __aap_usernames: "{{ __aap_usernames | default([]) + [__candidate_user] }}"
   when: (__aap_user_hits | selectattr('username', 'equalto', __candidate_user) | list | length) > 0
+...
