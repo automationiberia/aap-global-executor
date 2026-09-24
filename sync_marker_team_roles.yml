@@ -39,7 +39,19 @@
     __ldap_bind_dn: "{{ (__env_ldap_bind_dn | length > 0) | ternary(__env_ldap_bind_dn, vault_ldap_bind_dn | default('')) }}"
     __ldap_bind_password: "{{ (__env_ldap_bind_password | length > 0) | ternary(__env_ldap_bind_password, vault_ldap_bind_password | default('')) }}"
     __ldap_search_base: "{{ (__env_ldap_search_base | length > 0) | ternary(__env_ldap_search_base, vault_ldap_search_base | default('')) }}"
-    __ldap_validate_certs: "{{ ((__env_ldap_validate_certs | length > 0) | ternary(__env_ldap_validate_certs, vault_ldap_validate_certs | default(false))) | bool }}"
+    # Validate-certs flag for the AD script (only meaningful for ldaps://).
+    # Keep this stringly-typed: boolean env/extra-var injectors from AAP have
+    # caused "| length" / "| bool" templating TypeErrors in the EE.
+    __ldap_validate_certs: >-
+      {{
+        true
+        if ((__env_ldap_validate_certs | default('') | string | lower) in ['1', 'true', 'yes'])
+        else (
+          true
+          if ((vault_ldap_validate_certs | default(false) | string | lower) in ['1', 'true', 'yes'])
+          else false
+        )
+      }}
 
     # AAP API connection
     __env_controller_host: "{{ lookup('ansible.builtin.env', 'CONTROLLER_HOST') }}"

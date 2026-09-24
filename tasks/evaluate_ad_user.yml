@@ -30,7 +30,7 @@
           - --username
           - "{{ __candidate_user }}"
           - --validate-certs
-          - "{{ (__ldap_validate_certs | default(false) | bool) | ternary('true', 'false') }}"
+          - "{{ 'true' if __ldap_validate_certs else 'false' }}"
           - --outfile
           - "{{ __ad_out }}"
       environment:
@@ -53,7 +53,7 @@
 - name: Show AD evaluate diagnostics for {{ __candidate_user }}
   ansible.builtin.debug:
     msg:
-      outfile_ok: "{{ not (true if (__ad_out_slurp.failed | default(false)) else false) }}"
+      has_outfile: "{{ __ad_out_slurp.content is defined }}"
       block_error: "{{ __ad_eval_block_error | default('') }}"
       raw: >-
         {{
