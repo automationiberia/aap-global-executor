@@ -24,14 +24,10 @@
     ge_schedule_name: "Sync Marker Team Roles hourly"
     ge_playbook: "sync_marker_team_roles.yml"
 
-    project_scm_url: "https://github.com/EXAMPLE_ORG/aap-global-executor.git"
-    project_scm_branch: "main"
-
-    ge_vault_credential: "CHANGE_ME_VAULT_CREDENTIAL"
-    ge_aap_api_credential: "CHANGE_ME_AAP_API_CREDENTIAL"
-    ge_ldap_credential: "Global Executor LDAP"
-    ge_ldap_credential_type: "LDAP Active Directory"
-    ge_execution_environment: "CHANGE_ME_EE"
+    # Optional overrides live in vars/secrets.yml (see secrets.yml.example):
+    #   project_scm_url, project_scm_branch, ge_vault_credential,
+    #   ge_aap_api_credential, ge_execution_environment, ge_ldap_credential,
+    #   ge_ldap_credential_type, vault_ldap_*
 
     aap_hostname: "{{ vault_aap_hostname }}"
     aap_username: "{{ vault_aap_username }}"
@@ -44,6 +40,17 @@
     aap_configuration_async_dir: /tmp/ansible-async-ge
 
   tasks:
+    - name: Apply bootstrap defaults when not set in vars/secrets.yml
+      ansible.builtin.set_fact:
+        project_scm_url: "{{ project_scm_url | default('https://github.com/EXAMPLE_ORG/aap-global-executor.git') }}"
+        project_scm_branch: "{{ project_scm_branch | default('main') }}"
+        ge_vault_credential: "{{ ge_vault_credential | default('CHANGE_ME_VAULT_CREDENTIAL') }}"
+        ge_aap_api_credential: "{{ ge_aap_api_credential | default('CHANGE_ME_AAP_API_CREDENTIAL') }}"
+        ge_execution_environment: "{{ ge_execution_environment | default('CHANGE_ME_EE') }}"
+        ge_ldap_credential: "{{ ge_ldap_credential | default('Global Executor LDAP') }}"
+        ge_ldap_credential_type: "{{ ge_ldap_credential_type | default('LDAP Active Directory') }}"
+        vault_ldap_validate_certs: "{{ vault_ldap_validate_certs | default(false) }}"
+
     # No built-in AAP credential type injects LDAP bind settings for playbooks.
     # Create a custom type that injects GE_LDAP_* environment variables.
     - name: Define LDAP Active Directory credential type
