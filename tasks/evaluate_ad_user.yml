@@ -1,42 +1,87 @@
 ---
 # Evaluate one candidate username against Active Directory via files/eval_ad_account.py
 # (python-ldap only; no community.general). Appends to __ad_checks: {user, ok, reason}.
+#
+# Bind password via env. Result JSON written to a temp file so diagnostics are visible
+# without no_log censoring the registered command output.
 
 - name: Evaluate AD account for {{ __candidate_user }}
-  ansible.builtin.command:
-    argv:
-      - python3
-      - "{{ playbook_dir }}/files/eval_ad_account.py"
-      - --server
-      - "{{ __ldap_server }}"
-      - --bind-dn
-      - "{{ __ldap_bind_dn }}"
-      - --bind-password
-      - "{{ __ldap_bind_password }}"
-      - --search-base
-      - "{{ __ldap_search_base }}"
-      - --username
-      - "{{ __candidate_user }}"
-      - --validate-certs
-      - "{{ (__ldap_validate_certs | default(false) | bool) | ternary('true', 'false') }}"
-  register: __ad_eval_cmd
-  changed_when: false
+  vars:
+    __ad_out: "/tmp/ge_ad_eval_{{ __candidate_user }}.json"
+  block:
+    - name: Remove previous AD eval outfile for {{ __candidate_user }}
+      ansible.builtin.file:
+        path: "{{ __ad_out }}"
+        state: absent
+
+    - name: Run AD account eval script for {{ __candidate_user }}
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/eval_ad_account.py"
+          - --server
+          - "{{ __ldap_server }}"
+          - --bind-dn
+          - "{{ __ldap_bind_dn }}"
+          - --bind-password-env
+          - GE_LDAP_BIND_PASSWORD
+          - --search-base
+          - "{{ __ldap_search_base }}"
+          - --username
+          - "{{ __candidate_user }}"
+          - --validate-certs
+          - "{{ (__ldap_validate_certs | default(false) | bool) | ternary('true', 'false') }}"
+          - --outfile
+          - "{{ __ad_out }}"
+      environment:
+        GE_LDAP_BIND_PASSWORD: "{{ __ldap_bind_password }}"
+      register: __ad_eval_cmd
+      changed_when: false
+      failed_when: false
+      no_log: true
+  rescue:
+    - name: Note AD eval block failure for {{ __candidate_user }}
+      ansible.builtin.set_fact:
+        __ad_eval_block_error: "{{ ansible_failed_result.msg | default('ad eval block failed') | truncate(300, true, '...') }}"
+
+- name: Read AD eval outfile for {{ __candidate_user }}
+  ansible.builtin.slurp:
+    src: "/tmp/ge_ad_eval_{{ __candidate_user }}.json"
+  register: __ad_out_slurp
   failed_when: false
-  # Password is on argv; keep no_log. Script always exits 0 with JSON on stdout.
-  no_log: true
 
-- name: Parse AD evaluation stdout for {{ __candidate_user }}
-  ansible.builtin.set_fact:
-    __ad_eval_parsed:
-      ok: false
-      reason: ldap_error
-      detail: "{{ (__ad_eval_cmd.stderr | default('empty script output', true)) | truncate(300, true, '...') }}"
-  when: (__ad_eval_cmd.stdout | default('') | length) == 0 or not ((__ad_eval_cmd.stdout | trim) is match('\{'))
+- name: Show AD evaluate diagnostics for {{ __candidate_user }}
+  ansible.builtin.debug:
+    msg:
+      outfile_ok: "{{ not (true if (__ad_out_slurp.failed | default(false)) else false) }}"
+      block_error: "{{ __ad_eval_block_error | default('') }}"
+      raw: >-
+        {{
+          (__ad_out_slurp.content | b64decode)
+          if (__ad_out_slurp.content is defined)
+          else ''
+        }}
 
-- name: Parse AD evaluation JSON for {{ __candidate_user }}
+- name: Parse AD evaluation for {{ __candidate_user }}
   ansible.builtin.set_fact:
-    __ad_eval_parsed: "{{ __ad_eval_cmd.stdout | from_json }}"
-  when: (__ad_eval_cmd.stdout | default('') | length) > 0 and ((__ad_eval_cmd.stdout | trim) is match('\{'))
+    __ad_eval_parsed: "{{ __parsed }}"
+  vars:
+    __raw: >-
+      {{
+        (__ad_out_slurp.content | b64decode)
+        if (__ad_out_slurp.content is defined)
+        else ''
+      }}
+    __parsed: >-
+      {{
+        (__raw | from_json)
+        if (__raw | length) > 0 and (__raw | trim) is match('\{')
+        else {
+          'ok': false,
+          'reason': 'ldap_error',
+          'detail': (__ad_eval_block_error | default('no eval outfile / empty result'))
+        }
+      }}
 
 - name: Record AD evaluation for {{ __candidate_user }}
   ansible.builtin.set_fact:

@@ -137,10 +137,17 @@ def ldap_lookup(
 
 def main() -> int:
     try:
+        import os
+
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("--server", required=True)
         parser.add_argument("--bind-dn", required=True)
-        parser.add_argument("--bind-password", required=True)
+        parser.add_argument("--bind-password", default="")
+        parser.add_argument(
+            "--bind-password-env",
+            default="",
+            help="Read bind password from this environment variable (preferred over --bind-password)",
+        )
         parser.add_argument("--search-base", required=True)
         parser.add_argument("--username", required=True)
         parser.add_argument(
@@ -148,20 +155,52 @@ def main() -> int:
             default="false",
             choices=["true", "false", "True", "False", "yes", "no"],
         )
+        parser.add_argument(
+            "--outfile",
+            default="",
+            help="Optional path to write the JSON result (always also printed to stdout)",
+        )
         args = parser.parse_args()
         validate = str(args.validate_certs).lower() in ("true", "yes", "1")
 
-        result = ldap_lookup(
-            server=args.server,
-            bind_dn=args.bind_dn,
-            bind_password=args.bind_password,
-            search_base=args.search_base,
-            username=args.username,
-            validate_certs=validate,
-        )
-        return emit(result)
+        bind_password = args.bind_password
+        if args.bind_password_env:
+            bind_password = os.environ.get(args.bind_password_env, "")
+        if not bind_password:
+            payload = {
+                "ok": False,
+                "reason": "ldap_error",
+                "detail": "bind password missing (pass --bind-password or --bind-password-env)",
+            }
+        else:
+            payload = ldap_lookup(
+                server=args.server,
+                bind_dn=args.bind_dn,
+                bind_password=bind_password,
+                search_base=args.search_base,
+                username=args.username,
+                validate_certs=validate,
+            )
+
+        if args.outfile:
+            with open(args.outfile, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+        return emit(payload)
     except Exception as exc:  # noqa: BLE001 - always return JSON to Ansible
-        return emit({"ok": False, "reason": "ldap_error", "detail": str(exc)})
+        payload = {"ok": False, "reason": "ldap_error", "detail": str(exc)}
+        try:
+            # best-effort outfile even on unexpected errors
+            outfile = ""
+            for i, a in enumerate(sys.argv):
+                if a == "--outfile" and i + 1 < len(sys.argv):
+                    outfile = sys.argv[i + 1]
+                    break
+            if outfile:
+                with open(outfile, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh)
+        except Exception:
+            pass
+        return emit(payload)
 
 
 if __name__ == "__main__":
