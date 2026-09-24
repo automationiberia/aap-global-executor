@@ -1,33 +1,26 @@
 ---
-# Probe Gateway for each GE_EXECUTOR_USERS candidate. Sets:
-#   __aap_usernames            — usernames that exist in AAP
-#   __skipped_absent_from_aap  — listed usernames with no Gateway user yet
-#
-# Avoids filetree_create/read of gateway_users (include_vars can crash on
-# exporter YAML: "unsupported operand type(s) for |=: 'bool' and 'str'").
+# Probe Gateway for each GE_EXECUTOR_USERS candidate. Appends to __aap_usernames
+# when the user exists. Uses ansible.platform.gateway_api (same path as filetree_create)
+# instead of uri + fragile Jinja when-clauses.
 
-- name: Probe AAP Gateway for listed user {{ __candidate_user }}
-  ansible.builtin.uri:
-    url: "{{ aap_hostname }}/api/gateway/v1/users/?username={{ __candidate_user | urlencode }}&page_size=10"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ aap_token }}"
-    validate_certs: "{{ aap_validate_certs }}"
-    status_code: [200]
-  register: __aap_user_probe
-  changed_when: false
-  failed_when: false
+- name: Look up AAP Gateway user {{ __candidate_user }}
+  ansible.builtin.set_fact:
+    __aap_user_hits: "{{ query('ansible.platform.gateway_api', 'api/gateway/v1/users/',
+      query_params={'username': __candidate_user},
+      host=aap_hostname,
+      oauth_token=aap_token,
+      verify_ssl=aap_validate_certs,
+      return_all=true,
+      max_objects=10) }}"
+
+- name: Show AAP lookup for {{ __candidate_user }}
+  ansible.builtin.debug:
+    msg:
+      username: "{{ __candidate_user }}"
+      hits: "{{ __aap_user_hits | map(attribute='username') | list }}"
+      present: "{{ (__aap_user_hits | selectattr('username', 'equalto', __candidate_user) | list | length) > 0 }}"
 
 - name: Record AAP presence for {{ __candidate_user }}
   ansible.builtin.set_fact:
     __aap_usernames: "{{ __aap_usernames | default([]) + [__candidate_user] }}"
-  when:
-    - (__aap_user_probe.status | default(0) | int) == 200
-    - >
-      (
-        (__aap_user_probe.json.results | default([]))
-        | selectattr('username', 'defined')
-        | selectattr('username', 'equalto', __candidate_user)
-        | list
-        | length
-      ) > 0
+  when: (__aap_user_hits | selectattr('username', 'equalto', __candidate_user) | list | length) > 0
