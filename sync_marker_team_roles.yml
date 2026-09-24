@@ -158,9 +158,9 @@
           ineligible: "{{ __ineligible_users }}"
 
     # -------------------------------------------------------------------------
-    # 2. Export organizations and role assignments from AAP
+    # 2. Export organizations, users, and role assignments from AAP
     # -------------------------------------------------------------------------
-    - name: Export organizations and role user assignments from AAP
+    - name: Export organizations, users, and role assignments from AAP
       ansible.builtin.import_role:
         name: infra.aap_configuration_extended.filetree_create
       vars:
@@ -168,7 +168,25 @@
         omit_id: true
         input_tag:
           - gateway_organizations
+          - gateway_users
           - gateway_role_user_assignments
+
+    # filetree_read's include_vars crashes on gateway_users.yaml
+    # ("unsupported operand type(s) for |=: 'bool' and 'str'"). Move the file
+    # aside, load usernames ourselves, then let filetree_read load the rest.
+    - name: Stage exported Gateway users file for safe parsing
+      ansible.builtin.copy:
+        src: "{{ __tmp_dir_export }}/gateway_users.yaml"
+        dest: "{{ __tmp_dir_export }}/.gateway_users_for_sync.yaml"
+        remote_src: true
+        mode: "0644"
+      failed_when: false
+
+    - name: Remove gateway_users.yaml so filetree_read skips it
+      ansible.builtin.file:
+        path: "{{ __tmp_dir_export }}/gateway_users.yaml"
+        state: absent
+      failed_when: false
 
     - name: Load exported state with filetree_read
       ansible.builtin.import_role:
@@ -177,21 +195,47 @@
         dir_orgs_vars: "{{ __tmp_dir_export }}"
         controller_configuration_filetree_read_layout: create
 
+    - name: Read staged Gateway users export
+      ansible.builtin.slurp:
+        src: "{{ __tmp_dir_export }}/.gateway_users_for_sync.yaml"
+      register: __gateway_users_slurp
+      failed_when: false
+
+    - name: Extract AAP usernames from staged Gateway users export
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import sys
+            try:
+                import yaml
+            except ImportError:
+                sys.exit(0)
+            path = sys.argv[1]
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    doc = yaml.safe_load(fh) or {}
+            except Exception:
+                doc = {}
+            for entry in doc.get("aap_user_accounts") or []:
+                if isinstance(entry, dict) and entry.get("username"):
+                    print(entry["username"])
+          - "{{ __tmp_dir_export }}/.gateway_users_for_sync.yaml"
+      register: __aap_users_extract
+      changed_when: false
+      failed_when: false
+      when: __gateway_users_slurp.content is defined
+
     - name: Store exported data in internal variables
       ansible.builtin.set_fact:
         __all_organizations: "{{ aap_organizations | default(gateway_organizations | default([])) }}"
         __all_role_user_assignments: "{{ gateway_role_user_assignments | default([]) }}"
         __org_names: "{{ (aap_organizations | default(gateway_organizations | default([]))) | map(attribute='name') | list }}"
-        __aap_usernames: []
+        __aap_usernames: "{{ (__aap_users_extract.stdout_lines | default([])) if (__aap_users_extract is defined) else [] }}"
 
     # Users who never logged into AAP are not in Gateway yet; role assign/revoke
     # would fail with "User lookup failed". Skip them until they exist.
-    - name: Probe AAP Gateway for each listed executor user
-      ansible.builtin.include_tasks: tasks/probe_aap_user.yml
-      loop: "{{ ge_executor_user_list }}"
-      loop_control:
-        loop_var: __candidate_user
-
     - name: Restrict role sync to listed users that already exist in AAP
       ansible.builtin.set_fact:
         __skipped_absent_from_aap: "{{ ge_executor_user_list | reject('in', __aap_usernames) | list }}"
@@ -201,7 +245,8 @@
     - name: Show AAP presence filter
       ansible.builtin.debug:
         msg:
-          aap_present: "{{ __aap_usernames }}"
+          aap_users_exported: "{{ __aap_usernames | length }}"
+          aap_present_listed: "{{ ge_executor_user_list | select('in', __aap_usernames) | list }}"
           skipped_absent_from_aap: "{{ __skipped_absent_from_aap }}"
           eligible_for_roles: "{{ __eligible_users }}"
           ineligible_for_roles: "{{ __ineligible_users }}"

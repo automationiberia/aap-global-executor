@@ -17,7 +17,6 @@ list are left untouched.
 | `sync_marker_team_roles.yml` | Main sync playbook (AD check + role assign/revoke) |
 | `bootstrap_aap_runner.yml` | Credential type/credential, inventory, project, JT, schedule |
 | `tasks/evaluate_ad_user.yml` | Per-user LDAP lookup + AD flag evaluation |
-| `tasks/probe_aap_user.yml` | Per-user Gateway presence check (skip if never logged in) |
 | `files/eval_ad_account.py` | AD account status helper (disabled / password / expiry) |
 | `collections/requirements.yml` | Collections installed into the job / project |
 | `ee/` | Minimal Execution Environment definition (`ansible-builder`) |
@@ -45,10 +44,10 @@ GE_EXECUTOR_USERS (env) ──► candidate usernames
 2. For each username, query AD with `files/eval_ad_account.py` (`python-ldap`,
    or `ldapsearch` fallback)
    and evaluate account flags.
-3. Export organizations and role-user assignments with
-   `infra.aap_configuration_extended.filetree_create` / `filetree_read`.
-4. Probe Gateway `/api/gateway/v1/users/` for each listed username; drop
-   candidates that do not exist in AAP yet (no login → no Gateway user).
+3. Export organizations, Gateway users, and role-user assignments with
+   `infra.aap_configuration_extended.filetree_create` / `filetree_read`
+   (usernames are taken from the users export; no extra Gateway API calls).
+4. Drop candidates that do not exist in AAP yet (no login → no Gateway user).
 5. Compute a **delta** of creates and revokes vs the exported state.
 6. Apply with `gateway_role_user_assignments` (skipped when empty).
 
