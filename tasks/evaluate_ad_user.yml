@@ -5,7 +5,7 @@
 - name: Evaluate AD account for {{ __candidate_user }}
   ansible.builtin.command:
     argv:
-      - "{{ ansible_playbook_python | default('python3') }}"
+      - python3
       - "{{ playbook_dir }}/files/eval_ad_account.py"
       - --server
       - "{{ __ldap_server }}"
@@ -18,18 +18,32 @@
       - --username
       - "{{ __candidate_user }}"
       - --validate-certs
-      - "{{ __ldap_validate_certs | bool | ternary('true', 'false') }}"
+      - "{{ (__ldap_validate_certs | default(false) | bool) | ternary('true', 'false') }}"
   register: __ad_eval_cmd
   changed_when: false
   failed_when: false
+  # Password is on argv; keep no_log. Script always exits 0 with JSON on stdout.
   no_log: true
+
+- name: Parse AD evaluation stdout for {{ __candidate_user }}
+  ansible.builtin.set_fact:
+    __ad_eval_parsed:
+      ok: false
+      reason: ldap_error
+      detail: "{{ (__ad_eval_cmd.stderr | default('empty script output', true)) | truncate(300, true, '...') }}"
+  when: (__ad_eval_cmd.stdout | default('') | length) == 0 or not ((__ad_eval_cmd.stdout | trim) is match('\{'))
+
+- name: Parse AD evaluation JSON for {{ __candidate_user }}
+  ansible.builtin.set_fact:
+    __ad_eval_parsed: "{{ __ad_eval_cmd.stdout | from_json }}"
+  when: (__ad_eval_cmd.stdout | default('') | length) > 0 and ((__ad_eval_cmd.stdout | trim) is match('\{'))
 
 - name: Record AD evaluation for {{ __candidate_user }}
   ansible.builtin.set_fact:
     __ad_checks: "{{ __ad_checks | default([]) + [__row] }}"
   vars:
-    __parsed: "{{ (__ad_eval_cmd.stdout | default('{}') | from_json) if (__ad_eval_cmd.stdout | default('') | length) > 0 else {'ok': false, 'reason': 'ldap_error'} }}"
     __row:
       user: "{{ __candidate_user }}"
-      ok: "{{ __parsed.ok | default(false) | bool }}"
-      reason: "{{ __parsed.reason | default('ldap_error') }}"
+      ok: "{{ __ad_eval_parsed.ok | default(false) | bool }}"
+      reason: "{{ __ad_eval_parsed.reason | default('ldap_error') }}"
+      detail: "{{ __ad_eval_parsed.detail | default('') }}"

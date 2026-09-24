@@ -33,7 +33,9 @@
     __users_raw: "{{ (__env_executor_users | length > 0) | ternary(__env_executor_users, ge_executor_users) }}"
     ge_executor_user_list: "{{ __users_raw.split(',') | map('trim') | reject('equalto', '') | list }}"
 
-    __ldap_server: "{{ (__env_ldap_server | length > 0) | ternary(__env_ldap_server, vault_ldap_server | default('')) }}"
+    # python-ldap requires a scheme; accept bare host/IP from credentials
+    __ldap_server_raw: "{{ (__env_ldap_server | length > 0) | ternary(__env_ldap_server, vault_ldap_server | default('')) }}"
+    __ldap_server: "{{ (__ldap_server_raw is match('^\\w+://')) | ternary(__ldap_server_raw, 'ldap://' ~ __ldap_server_raw) }}"
     __ldap_bind_dn: "{{ (__env_ldap_bind_dn | length > 0) | ternary(__env_ldap_bind_dn, vault_ldap_bind_dn | default('')) }}"
     __ldap_bind_password: "{{ (__env_ldap_bind_password | length > 0) | ternary(__env_ldap_bind_password, vault_ldap_bind_password | default('')) }}"
     __ldap_search_base: "{{ (__env_ldap_search_base | length > 0) | ternary(__env_ldap_search_base, vault_ldap_search_base | default('')) }}"

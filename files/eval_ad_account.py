@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Look up a user in Active Directory/LDAP and evaluate executor eligibility.
 
-Requires: python-ldap (python3-ldap on RHEL).
+Requires: python-ldap (python3-ldap on RHEL). Compatible with Python 3.9+.
 
 Usage:
   eval_ad_account.py --server URI --bind-dn DN --bind-password PW \\
       --search-base BASE --username SAM [--validate-certs true|false]
 
-Prints JSON: {"ok": bool, "reason": str}
+Always exits 0 and prints JSON: {"ok": bool, "reason": str, ...}
 """
 from __future__ import annotations
 
@@ -15,9 +15,15 @@ import argparse
 import json
 import sys
 import time
+from typing import Any, Dict, Optional
 
 
-def first_attr(entry_attrs: dict, name: str, default: str = "0") -> str:
+def emit(payload: Dict[str, Any]) -> int:
+    json.dump(payload, sys.stdout)
+    return 0
+
+
+def first_attr(entry_attrs: Dict[str, Any], name: str, default: str = "0") -> str:
     raw = entry_attrs.get(name)
     if raw is None:
         return default
@@ -32,7 +38,7 @@ def first_attr(entry_attrs: dict, name: str, default: str = "0") -> str:
     return str(val)
 
 
-def evaluate_entry(attrs: dict | None) -> dict:
+def evaluate_entry(attrs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not attrs:
         return {"ok": False, "reason": "not_found"}
 
@@ -62,6 +68,15 @@ def evaluate_entry(attrs: dict | None) -> dict:
     return {"ok": True, "reason": "ok"}
 
 
+def normalize_server(server: str) -> str:
+    server = (server or "").strip()
+    if not server:
+        return server
+    if "://" not in server:
+        return "ldap://%s" % server
+    return server
+
+
 def ldap_lookup(
     server: str,
     bind_dn: str,
@@ -69,7 +84,7 @@ def ldap_lookup(
     search_base: str,
     username: str,
     validate_certs: bool,
-) -> dict:
+) -> Dict[str, Any]:
     try:
         import ldap  # type: ignore
         import ldap.filter  # type: ignore
@@ -80,6 +95,7 @@ def ldap_lookup(
             "detail": "python-ldap is not installed in the execution environment",
         }
 
+    server = normalize_server(server)
     conn = ldap.initialize(server)
     conn.set_option(ldap.OPT_REFERRALS, 0)
     conn.set_option(ldap.OPT_NETWORK_TIMEOUT, 15)
@@ -120,30 +136,32 @@ def ldap_lookup(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--server", required=True)
-    parser.add_argument("--bind-dn", required=True)
-    parser.add_argument("--bind-password", required=True)
-    parser.add_argument("--search-base", required=True)
-    parser.add_argument("--username", required=True)
-    parser.add_argument(
-        "--validate-certs",
-        default="false",
-        choices=["true", "false", "True", "False", "yes", "no"],
-    )
-    args = parser.parse_args()
-    validate = str(args.validate_certs).lower() in ("true", "yes", "1")
+    try:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--server", required=True)
+        parser.add_argument("--bind-dn", required=True)
+        parser.add_argument("--bind-password", required=True)
+        parser.add_argument("--search-base", required=True)
+        parser.add_argument("--username", required=True)
+        parser.add_argument(
+            "--validate-certs",
+            default="false",
+            choices=["true", "false", "True", "False", "yes", "no"],
+        )
+        args = parser.parse_args()
+        validate = str(args.validate_certs).lower() in ("true", "yes", "1")
 
-    result = ldap_lookup(
-        server=args.server,
-        bind_dn=args.bind_dn,
-        bind_password=args.bind_password,
-        search_base=args.search_base,
-        username=args.username,
-        validate_certs=validate,
-    )
-    json.dump(result, sys.stdout)
-    return 0
+        result = ldap_lookup(
+            server=args.server,
+            bind_dn=args.bind_dn,
+            bind_password=args.bind_password,
+            search_base=args.search_base,
+            username=args.username,
+            validate_certs=validate,
+        )
+        return emit(result)
+    except Exception as exc:  # noqa: BLE001 - always return JSON to Ansible
+        return emit({"ok": False, "reason": "ldap_error", "detail": str(exc)})
 
 
 if __name__ == "__main__":
