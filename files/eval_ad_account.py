@@ -77,6 +77,106 @@ def normalize_server(server: str) -> str:
     return server
 
 
+def escape_ldap_filter(value: str) -> str:
+    """RFC 4515 filter escaping without python-ldap."""
+    out = []
+    for ch in value:
+        if ch in ['\\', '*', '(', ')', '\x00']:
+            out.append('\\%02x' % ord(ch))
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+def ldapsearch_cli_lookup(
+    server: str,
+    bind_dn: str,
+    bind_password: str,
+    search_base: str,
+    username: str,
+    validate_certs: bool,
+) -> Optional[Dict[str, Any]]:
+    """Fallback when python-ldap is missing but openldap clients are present."""
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("ldapsearch"):
+        return None
+
+    server = normalize_server(server)
+    filt = "(&(objectClass=user)(sAMAccountName=%s))" % escape_ldap_filter(username)
+    attrs = [
+        "sAMAccountName",
+        "userAccountControl",
+        "pwdLastSet",
+        "accountExpires",
+        "lockoutTime",
+    ]
+    cmd = [
+        "ldapsearch",
+        "-x",
+        "-LLL",
+        "-H",
+        server,
+        "-D",
+        bind_dn,
+        "-w",
+        bind_password,
+        "-b",
+        search_base,
+        filt,
+    ] + attrs
+    if server.lower().startswith("ldaps://") and not validate_certs:
+        env = dict(os.environ)
+        env["LDAPTLS_REQCERT"] = "never"
+    else:
+        env = dict(os.environ)
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": "ldap_error", "detail": "ldapsearch failed: %s" % exc}
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "ldapsearch failed").strip()
+        return {"ok": False, "reason": "ldap_error", "detail": detail[:300]}
+
+    # Parse simple LDIF for the attributes we care about
+    attrs_map: Dict[str, Any] = {}
+    dn_seen = False
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("dn:"):
+            dn_seen = True
+            continue
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip()
+        val = val.strip()
+        if key in (
+            "userAccountControl",
+            "pwdLastSet",
+            "accountExpires",
+            "lockoutTime",
+            "sAMAccountName",
+        ):
+            attrs_map[key] = [val]
+
+    if not dn_seen and not attrs_map:
+        return evaluate_entry(None)
+    return evaluate_entry(attrs_map)
+
+
 def ldap_lookup(
     server: str,
     bind_dn: str,
@@ -89,10 +189,23 @@ def ldap_lookup(
         import ldap  # type: ignore
         import ldap.filter  # type: ignore
     except ImportError:
+        fallback = ldapsearch_cli_lookup(
+            server=server,
+            bind_dn=bind_dn,
+            bind_password=bind_password,
+            search_base=search_base,
+            username=username,
+            validate_certs=validate_certs,
+        )
+        if fallback is not None:
+            return fallback
         return {
             "ok": False,
             "reason": "ldap_error",
-            "detail": "python-ldap is not installed in the execution environment",
+            "detail": (
+                "python-ldap is not installed in the execution environment "
+                "and ldapsearch is not available"
+            ),
         }
 
     server = normalize_server(server)

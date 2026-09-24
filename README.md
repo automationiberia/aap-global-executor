@@ -35,7 +35,8 @@ GE_EXECUTOR_USERS (env) ──► candidate usernames
 ```
 
 1. Read the executor list from `GE_EXECUTOR_USERS` (or `ge_executor_users`).
-2. For each username, query AD with `files/eval_ad_account.py` (`python-ldap`)
+2. For each username, query AD with `files/eval_ad_account.py` (`python-ldap`,
+   or `ldapsearch` fallback)
    and evaluate account flags.
 3. Export organizations and role-user assignments with
    `infra.aap_configuration_extended.filetree_create` / `filetree_read`.
@@ -53,7 +54,8 @@ Authenticator maps and marker teams are **not** used.
 - Custom **LDAP Active Directory** credential (created by bootstrap; injects
   `GE_LDAP_*`)
 - Execution environment that can reach Gateway **and** LDAP/AD, with
-  `python-ldap` / `python3-ldap` installed (used by `files/eval_ad_account.py`)
+  `python-ldap` / `python3-ldap` **or** OpenLDAP clients (`ldapsearch`) installed
+  (used by `files/eval_ad_account.py`)
 - Project collection install enabled for `collections/requirements.yml`
 
 ## Environment variables
@@ -148,8 +150,9 @@ See `collections/requirements.yml`:
 - `ansible.platform` (`>=2.7.20260812`) for `filetree_create` / `gateway_api`
 - `ansible.controller` for bootstrap objects
 
-AD lookups use `files/eval_ad_account.py` with `python-ldap` (no extra Ansible
-collection). The EE must include that Python library.
+AD lookups use `files/eval_ad_account.py` with `python-ldap` when available,
+otherwise `ldapsearch` from OpenLDAP clients (no extra Ansible collection).
+The EE must include at least one of those.
 
 Before `filetree_create`, the sync playbook patches `PlatformError.retryable` in
 the loaded `ansible.platform` copy (upstream HTTP-retry helper bug).

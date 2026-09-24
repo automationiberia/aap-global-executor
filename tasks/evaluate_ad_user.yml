@@ -55,33 +55,20 @@
     msg:
       has_outfile: "{{ __ad_out_slurp.content is defined }}"
       block_error: "{{ __ad_eval_block_error | default('') }}"
-      raw: >-
-        {{
-          (__ad_out_slurp.content | b64decode)
-          if (__ad_out_slurp.content is defined)
-          else ''
-        }}
+      raw: "{{ (__ad_out_slurp.content | b64decode) if (__ad_out_slurp.content is defined) else '' }}"
 
-- name: Parse AD evaluation for {{ __candidate_user }}
+- name: Parse AD evaluation JSON for {{ __candidate_user }}
   ansible.builtin.set_fact:
-    __ad_eval_parsed: "{{ __parsed }}"
-  vars:
-    __raw: >-
-      {{
-        (__ad_out_slurp.content | b64decode)
-        if (__ad_out_slurp.content is defined)
-        else ''
-      }}
-    __parsed: >-
-      {{
-        (__raw | from_json)
-        if (__raw | length) > 0 and (__raw | trim) is match('\{')
-        else {
-          'ok': false,
-          'reason': 'ldap_error',
-          'detail': (__ad_eval_block_error | default('no eval outfile / empty result'))
-        }
-      }}
+    __ad_eval_parsed: "{{ __ad_out_slurp.content | b64decode | from_json }}"
+  when: __ad_out_slurp.content is defined
+
+- name: Default AD evaluation when outfile missing for {{ __candidate_user }}
+  ansible.builtin.set_fact:
+    __ad_eval_parsed:
+      ok: false
+      reason: ldap_error
+      detail: "{{ __ad_eval_block_error | default('no eval outfile / empty result') }}"
+  when: __ad_out_slurp.content is not defined
 
 - name: Record AD evaluation for {{ __candidate_user }}
   ansible.builtin.set_fact:
