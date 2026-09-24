@@ -145,17 +145,24 @@
       loop_control:
         loop_var: __candidate_user
 
-    - name: Derive eligible and ineligible usernames
+    - name: Derive eligible, ineligible, and skipped AD usernames
       ansible.builtin.set_fact:
-        __eligible_users: "{{ __ad_checks | selectattr('ok') | map(attribute='user') | list }}"
-        __ineligible_users: "{{ __ad_checks | rejectattr('ok') | map(attribute='user') | list }}"
+        # Only definitive AD outcomes drive grant/revoke. ldap_error / unknown
+        # must not revoke roles (e.g. LDAP unreachable from the runner).
+        __eligible_users: "{{ __eligible_users_tmp }}"
+        __ineligible_users: "{{ __ineligible_users_tmp }}"
+        __skipped_ad_uncertain: "{{ __ad_checks | map(attribute='user') | reject('in', __eligible_users_tmp) | reject('in', __ineligible_users_tmp) | list }}"
+      vars:
+        __eligible_users_tmp: "{{ __ad_checks | selectattr('reason', 'equalto', 'ok') | map(attribute='user') | list }}"
+        __ineligible_users_tmp: "{{ __ad_checks | selectattr('reason', 'in', ['not_found', 'disabled', 'password_expired', 'account_expired', 'locked_out']) | map(attribute='user') | list }}"
 
     - name: Show AD validation summary
       ansible.builtin.debug:
         msg:
           checks: "{{ __ad_checks }}"
           eligible: "{{ __eligible_users }}"
-          ineligible: "{{ __ineligible_users }}"
+          ineligible_revoke: "{{ __ineligible_users }}"
+          skipped_ad_uncertain: "{{ __skipped_ad_uncertain }}"
 
     # -------------------------------------------------------------------------
     # 2. Export organizations, users, and role assignments from AAP
@@ -241,6 +248,7 @@
         __skipped_absent_from_aap: "{{ ge_executor_user_list | reject('in', __aap_usernames) | list }}"
         __eligible_users: "{{ __eligible_users | select('in', __aap_usernames) | list }}"
         __ineligible_users: "{{ __ineligible_users | select('in', __aap_usernames) | list }}"
+        __skipped_ad_uncertain: "{{ __skipped_ad_uncertain | select('in', __aap_usernames) | list }}"
 
     - name: Show AAP presence filter
       ansible.builtin.debug:
@@ -248,6 +256,7 @@
           aap_users_exported: "{{ __aap_usernames | length }}"
           aap_present_listed: "{{ ge_executor_user_list | select('in', __aap_usernames) | list }}"
           skipped_absent_from_aap: "{{ __skipped_absent_from_aap }}"
+          skipped_ad_uncertain: "{{ __skipped_ad_uncertain }}"
           eligible_for_roles: "{{ __eligible_users }}"
           ineligible_for_roles: "{{ __ineligible_users }}"
 
@@ -320,6 +329,7 @@
       ansible.builtin.debug:
         msg:
           skipped_absent_from_aap: "{{ __skipped_absent_from_aap | length }}"
+          skipped_ad_uncertain: "{{ __skipped_ad_uncertain | length }}"
           eligible_users: "{{ __eligible_users | length }}"
           ineligible_users: "{{ __ineligible_users | length }}"
           organizations: "{{ __org_names | length }}"

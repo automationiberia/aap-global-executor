@@ -7,8 +7,8 @@ executor usernames, after validating each account in Active Directory.
 Eligible users (on the list, OK in AD, **and already present in AAP**) receive
 Organization Execute on all orgs. Listed users that are missing, disabled,
 locked, or password-expired in AD have that role revoked. Listed users that
-have never logged into AAP are skipped (no create/revoke). Users outside the
-list are left untouched.
+have never logged into AAP, or whose AD lookup fails transiently (`ldap_error`),
+are skipped (no create/revoke). Users outside the list are left untouched.
 
 ## Contents
 
@@ -32,6 +32,9 @@ GE_EXECUTOR_USERS (env) ──► candidate usernames
         │
         ├── not present in AAP Gateway users
         │         └── skip (no role create/revoke until first login)
+        │
+        ├── LDAP/AD lookup error (unreachable, bind failure, …)
+        │         └── skip (do not revoke on transient errors)
         │
         ├── OK in AD + present in AAP
         │         └── grant Organization Execute on all orgs (delta)
