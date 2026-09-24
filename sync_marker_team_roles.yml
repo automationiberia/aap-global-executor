@@ -160,7 +160,7 @@
     # -------------------------------------------------------------------------
     # 2. Export organizations and role assignments from AAP
     # -------------------------------------------------------------------------
-    - name: Export organizations, users, and role assignments from AAP
+    - name: Export organizations and role user assignments from AAP
       ansible.builtin.import_role:
         name: infra.aap_configuration_extended.filetree_create
       vars:
@@ -168,7 +168,6 @@
         omit_id: true
         input_tag:
           - gateway_organizations
-          - gateway_users
           - gateway_role_user_assignments
 
     - name: Load exported state with filetree_read
@@ -183,10 +182,16 @@
         __all_organizations: "{{ aap_organizations | default(gateway_organizations | default([])) }}"
         __all_role_user_assignments: "{{ gateway_role_user_assignments | default([]) }}"
         __org_names: "{{ (aap_organizations | default(gateway_organizations | default([]))) | map(attribute='name') | list }}"
-        __aap_usernames: "{{ (aap_user_accounts | default(gateway_users | default([]))) | map(attribute='username') | list }}"
+        __aap_usernames: []
 
     # Users who never logged into AAP are not in Gateway yet; role assign/revoke
     # would fail with "User lookup failed". Skip them until they exist.
+    - name: Probe AAP Gateway for each listed executor user
+      ansible.builtin.include_tasks: tasks/probe_aap_user.yml
+      loop: "{{ ge_executor_user_list }}"
+      loop_control:
+        loop_var: __candidate_user
+
     - name: Restrict role sync to listed users that already exist in AAP
       ansible.builtin.set_fact:
         __skipped_absent_from_aap: "{{ ge_executor_user_list | reject('in', __aap_usernames) | list }}"
@@ -196,6 +201,7 @@
     - name: Show AAP presence filter
       ansible.builtin.debug:
         msg:
+          aap_present: "{{ __aap_usernames }}"
           skipped_absent_from_aap: "{{ __skipped_absent_from_aap }}"
           eligible_for_roles: "{{ __eligible_users }}"
           ineligible_for_roles: "{{ __ineligible_users }}"
