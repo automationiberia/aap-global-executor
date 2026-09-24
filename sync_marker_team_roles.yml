@@ -1,12 +1,13 @@
 ---
-# Ensure a marker team + authenticator map exist, then sync the
-# "Organization Execute" role for every marker-team member across all orgs.
+# Sync Organization Execute across all orgs for a fixed executor user list,
+# validated against Active Directory (exists, not disabled, password not expired).
 #
-# Pattern: filetree_create / filetree_read (export current AAP state) +
-# infra.aap_configuration.dispatch (apply desired state). Team, authenticator
-# map, and role-sync payloads are built in-memory with set_fact.
+# User list: env GE_EXECUTOR_USERS (comma-separated) or extra var ge_executor_users.
+# LDAP bind: env GE_LDAP_* (from custom credential) or vault_ldap_* in secrets.yml.
+#
+# Pattern: filetree_create/read for AAP export + AD ldap_search + dispatch delta.
 
-- name: Manage marker team, authenticator map, and dynamic role sync on AAP
+- name: Sync Organization Execute for AD-validated executor users
   hosts: localhost
   connection: local
   gather_facts: false
@@ -15,34 +16,36 @@
     - vars/secrets.yml
 
   vars:
-    # --- Configurable inputs ---
-    marker_team_name: "Cross Executors"
-    marker_team_org: "Global Operations"
     target_role: "Organization Execute"
-    team_member_role: "Team Member"
 
-    marker_map_name: "Cross Executors membership"
-    marker_map_authenticator: "AD LDAP"
-    # Override on the Job Template (Extra Variables) or with -e:
-    #   marker_ldap_group_cn: "CN=mygroup,CN=Users,DC=example,DC=com"
-    marker_ldap_group_cn: "CN=cross-executors,CN=Users,DC=example,DC=com"
-    marker_map_triggers:
-      groups:
-        has_or:
-          - "{{ marker_ldap_group_cn }}"
+    # Comma-separated usernames; prefer env on the Job Template / runtime
+    ge_executor_users: ""
 
-    # Temp dir for filetree_create export only (internal vars use "__" prefix)
     __tmp_dir_export: "/tmp/aap_filetree_export"
 
-    # Connection: prefer CONTROLLER_* injected by an AAP credential when the job
-    # runs on the platform; otherwise use vars/secrets.yml (ansible-vault).
+    __env_executor_users: "{{ lookup('ansible.builtin.env', 'GE_EXECUTOR_USERS') }}"
+    __env_ldap_server: "{{ lookup('ansible.builtin.env', 'GE_LDAP_SERVER') }}"
+    __env_ldap_bind_dn: "{{ lookup('ansible.builtin.env', 'GE_LDAP_BIND_DN') }}"
+    __env_ldap_bind_password: "{{ lookup('ansible.builtin.env', 'GE_LDAP_BIND_PASSWORD') }}"
+    __env_ldap_search_base: "{{ lookup('ansible.builtin.env', 'GE_LDAP_SEARCH_BASE') }}"
+    __env_ldap_validate_certs: "{{ lookup('ansible.builtin.env', 'GE_LDAP_VALIDATE_CERTS') }}"
+
+    __users_raw: "{{ (__env_executor_users | length > 0) | ternary(__env_executor_users, ge_executor_users) }}"
+    ge_executor_user_list: "{{ __users_raw.split(',') | map('trim') | reject('equalto', '') | list }}"
+
+    __ldap_server: "{{ (__env_ldap_server | length > 0) | ternary(__env_ldap_server, vault_ldap_server | default('')) }}"
+    __ldap_bind_dn: "{{ (__env_ldap_bind_dn | length > 0) | ternary(__env_ldap_bind_dn, vault_ldap_bind_dn | default('')) }}"
+    __ldap_bind_password: "{{ (__env_ldap_bind_password | length > 0) | ternary(__env_ldap_bind_password, vault_ldap_bind_password | default('')) }}"
+    __ldap_search_base: "{{ (__env_ldap_search_base | length > 0) | ternary(__env_ldap_search_base, vault_ldap_search_base | default('')) }}"
+    __ldap_validate_certs: "{{ ((__env_ldap_validate_certs | length > 0) | ternary(__env_ldap_validate_certs, vault_ldap_validate_certs | default(false))) | bool }}"
+
+    # AAP API connection
     __env_controller_host: "{{ lookup('ansible.builtin.env', 'CONTROLLER_HOST') }}"
     __env_controller_username: "{{ lookup('ansible.builtin.env', 'CONTROLLER_USERNAME') }}"
     __env_controller_password: "{{ lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD') }}"
     __env_controller_verify: "{{ lookup('ansible.builtin.env', 'CONTROLLER_VERIFY_SSL') }}"
 
     __aap_hostname_raw: "{{ ((__env_controller_host | length > 0) | ternary(__env_controller_host, vault_aap_hostname)) | regex_replace('/$', '') }}"
-    # gateway_api / filetree_create expect a URL scheme
     aap_hostname: "{{ (__aap_hostname_raw is match('^https?://')) | ternary(__aap_hostname_raw, 'https://' ~ __aap_hostname_raw) }}"
     aap_username: "{{ (__env_controller_username | length > 0) | ternary(__env_controller_username, vault_aap_username) }}"
     aap_password: "{{ (__env_controller_password | length > 0) | ternary(__env_controller_password, vault_aap_password) }}"
@@ -53,20 +56,41 @@
     gateway_validate_certs: "{{ aap_validate_certs }}"
 
   tasks:
-    # -------------------------------------------------------------------------
-    # 0. Auth + export working directory
-    # -------------------------------------------------------------------------
-    - name: Show Gateway connection target (no secrets)
+    - name: Require executor user list
+      ansible.builtin.assert:
+        that:
+          - (ge_executor_user_list | length) > 0
+        fail_msg: >-
+          Set GE_EXECUTOR_USERS (env) or ge_executor_users (extra var) to a
+          comma-separated list of usernames.
+
+    - name: Require LDAP connection settings
+      ansible.builtin.assert:
+        that:
+          - (__ldap_server | length) > 0
+          - (__ldap_bind_dn | length) > 0
+          - (__ldap_bind_password | length) > 0
+          - (__ldap_search_base | length) > 0
+        fail_msg: >-
+          LDAP settings missing. Attach the "LDAP Active Directory" credential
+          (injects GE_LDAP_*) or set vault_ldap_* in vars/secrets.yml.
+
+    - name: Show sync inputs (no secrets)
       ansible.builtin.debug:
         msg:
           aap_hostname: "{{ aap_hostname }}"
-          aap_username: "{{ aap_username }}"
-          aap_validate_certs: "{{ aap_validate_certs }}"
+          ldap_server: "{{ __ldap_server }}"
+          ldap_search_base: "{{ __ldap_search_base }}"
+          executor_users: "{{ ge_executor_user_list }}"
           using_controller_env: "{{ __env_controller_host | length > 0 }}"
+          using_ldap_env: "{{ __env_ldap_server | length > 0 }}"
 
+    # -------------------------------------------------------------------------
+    # 0. AAP auth + export dir
+    # -------------------------------------------------------------------------
     - name: Obtain OAuth token for filetree_create
       ansible.platform.token:
-        description: "Token for marker team role sync"
+        description: "Token for executor role sync"
         scope: write
         state: present
         aap_hostname: "{{ aap_hostname }}"
@@ -74,9 +98,8 @@
         aap_password: "{{ aap_password }}"
         aap_validate_certs: "{{ aap_validate_certs }}"
 
-    - name: Expose OAuth token string for filetree_create gateway_api lookups
+    - name: Expose OAuth token string for filetree_create
       ansible.builtin.set_fact:
-        # Plain string — filetree_create accepts aap_token or aap_oauthtoken
         aap_token: "{{ (ansible_facts['aap_token'] is mapping) | ternary(ansible_facts['aap_token'].token, ansible_facts['aap_token']) }}"
         aap_oauthtoken: "{{ (ansible_facts['aap_token'] is mapping) | ternary(ansible_facts['aap_token'].token, ansible_facts['aap_token']) }}"
 
@@ -96,41 +119,32 @@
       changed_when: false
 
     # -------------------------------------------------------------------------
-    # 1. Ensure marker team + authenticator map (in-memory vars + dispatch)
+    # 1. Validate each listed user against Active Directory
     # -------------------------------------------------------------------------
-    - name: Define marker team in memory
+    - name: Initialize AD check results
       ansible.builtin.set_fact:
-        aap_teams:
-          - name: "{{ marker_team_name }}"
-            organization: "{{ marker_team_org }}"
-            description: "Marker team for automatic global execution role sync"
+        __ad_checks: []
 
-    - name: Define authenticator map in memory
+    - name: Evaluate each executor user in AD
+      ansible.builtin.include_tasks: tasks/evaluate_ad_user.yml
+      loop: "{{ ge_executor_user_list }}"
+      loop_control:
+        loop_var: __candidate_user
+
+    - name: Derive eligible and ineligible usernames
       ansible.builtin.set_fact:
-        gateway_authenticator_maps:
-          - name: "{{ marker_map_name }}"
-            authenticator: "{{ marker_map_authenticator }}"
-            map_type: team
-            role: "{{ team_member_role }}"
-            organization: "{{ marker_team_org }}"
-            team: "{{ marker_team_name }}"
-            revoke: true
-            triggers: "{{ marker_map_triggers }}"
+        __eligible_users: "{{ __ad_checks | selectattr('ok') | map(attribute='user') | list }}"
+        __ineligible_users: "{{ __ad_checks | rejectattr('ok') | map(attribute='user') | list }}"
 
-    - name: Dispatch marker team and authenticator map creation
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.dispatch
-      vars:
-        aap_configuration_dispatcher_roles:
-          - role: gateway_teams
-            var: aap_teams
-            tags: [teams, gateway_teams]
-          - role: gateway_authenticator_maps
-            var: gateway_authenticator_maps
-            tags: [authenticator_maps, gateway_authenticator_maps]
+    - name: Show AD validation summary
+      ansible.builtin.debug:
+        msg:
+          checks: "{{ __ad_checks }}"
+          eligible: "{{ __eligible_users }}"
+          ineligible: "{{ __ineligible_users }}"
 
     # -------------------------------------------------------------------------
-    # 2. Read current organizations and role assignments (filetree_create)
+    # 2. Export organizations and role assignments from AAP
     # -------------------------------------------------------------------------
     - name: Export organizations and role user assignments from AAP
       ansible.builtin.import_role:
@@ -153,35 +167,19 @@
       ansible.builtin.set_fact:
         __all_organizations: "{{ aap_organizations | default(gateway_organizations | default([])) }}"
         __all_role_user_assignments: "{{ gateway_role_user_assignments | default([]) }}"
+        __org_names: "{{ (aap_organizations | default(gateway_organizations | default([]))) | map(attribute='name') | list }}"
 
     # -------------------------------------------------------------------------
-    # 3. Extract current marker team members
+    # 3. Compute desired creates / revokes (scoped to GE_EXECUTOR_USERS)
     # -------------------------------------------------------------------------
-    - name: Collect marker team member usernames (Team Member assignments)
+    - name: Initialize desired assignment list
       ansible.builtin.set_fact:
-        __marker_team_members: "{{ __all_role_user_assignments
-          | selectattr('role_definition', 'equalto', team_member_role)
-          | selectattr('object_ids', 'contains', marker_team_name)
-          | map(attribute='user')
-          | list
-          | unique }}"
-
-    - name: Show detected marker team members
-      ansible.builtin.debug:
-        var: __marker_team_members
-
-    # -------------------------------------------------------------------------
-    # 4. Compute desired assignments vs assignments to revoke
-    # -------------------------------------------------------------------------
-    - name: Initialize sync lists
-      ansible.builtin.set_fact:
-        __org_names: "{{ __all_organizations | map(attribute='name') | list }}"
         __desired_roles: []
 
-    - name: Build desired assignments (user x organization)
+    - name: Build desired assignments for eligible users (user x organization)
       ansible.builtin.set_fact:
         __desired_roles: "{{ __desired_roles + [__assignment] }}"
-      loop: "{{ __marker_team_members | product(__org_names) | list }}"
+      loop: "{{ __eligible_users | product(__org_names) | list }}"
       loop_control:
         loop_var: __pair
       vars:
@@ -192,11 +190,11 @@
             - "{{ __pair.1 }}"
           state: present
 
-    - name: Compute assignments to revoke (users no longer in the marker team)
+    - name: Compute revocations for ineligible listed users
       ansible.builtin.set_fact:
         __roles_to_revoke: "{{ __all_role_user_assignments
           | selectattr('role_definition', 'equalto', target_role)
-          | rejectattr('user', 'in', __marker_team_members)
+          | selectattr('user', 'in', __ineligible_users)
           | map('combine', {'state': 'absent'})
           | list }}"
 
@@ -210,12 +208,12 @@
       vars:
         __key: "{{ __existing.user }}::{{ __existing.object_ids | first }}"
 
-    - name: Ensure existing-key index is defined when none exist yet
+    - name: Ensure existing-key index is defined
       ansible.builtin.set_fact:
         __existing_target_keys: []
       when: __existing_target_keys is not defined
 
-    - name: Keep only desired assignments missing from the exported state
+    - name: Keep only desired assignments missing from exported state
       ansible.builtin.set_fact:
         __roles_to_create: "{{ __roles_to_create | default([]) + [__desired] }}"
       loop: "{{ __desired_roles }}"
@@ -224,13 +222,13 @@
         label: "{{ __desired.user }} / {{ __desired.object_ids | first }}"
       when: "(__desired.user ~ '::' ~ (__desired.object_ids | first)) not in __existing_target_keys"
 
-    - name: Ensure create list is defined when everything is already in sync
+    - name: Ensure create list is defined
       ansible.builtin.set_fact:
         __roles_to_create: []
       when: __roles_to_create is not defined
 
     # -------------------------------------------------------------------------
-    # 5. Apply present + absent role assignments (in-memory + dispatch)
+    # 4. Apply delta via dispatch
     # -------------------------------------------------------------------------
     - name: Define role sync payload (delta only)
       ansible.builtin.set_fact:
@@ -239,7 +237,8 @@
     - name: Show role sync delta
       ansible.builtin.debug:
         msg:
-          marker_members: "{{ __marker_team_members | length }}"
+          eligible_users: "{{ __eligible_users | length }}"
+          ineligible_users: "{{ __ineligible_users | length }}"
           organizations: "{{ __org_names | length }}"
           desired_total: "{{ __desired_roles | length }}"
           already_present: "{{ (__desired_roles | length) - (__roles_to_create | length) }}"
@@ -257,9 +256,9 @@
             tags: [role_user_assignments, gateway_role_user_assignments]
       when: (gateway_role_user_assignments | length) > 0
 
-    - name: Skip dispatch when exported state already matches desired
+    - name: Skip dispatch when no role changes are required
       ansible.builtin.debug:
-        msg: "No role assignment changes required; skipping gateway_role_user_assignments dispatch."
+        msg: "No role assignment changes required; skipping dispatch."
       when: (gateway_role_user_assignments | length) == 0
 
     - name: Remove export working directory

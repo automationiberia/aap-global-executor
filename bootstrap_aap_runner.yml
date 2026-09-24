@@ -1,11 +1,12 @@
 ---
 # Bootstrap AAP objects so sync_marker_team_roles.yml can run on the platform
-# (inventory, public Git project, job template, hourly schedule).
+# (LDAP credential type/credential, inventory, public Git project, JT, schedule).
 #
-# Secrets: copy vars/secrets.yml.example → vars/secrets.yml, fill values, encrypt with
-# ansible-vault (vars/secrets.yml is gitignored). Job template attaches:
+# Secrets: copy vars/secrets.yml.example → vars/secrets.yml, fill values, encrypt.
+# Job template attaches:
 #   - Vault credential → decrypt vars/secrets.yml
 #   - AAP API credential → CONTROLLER_* for platform API calls
+#   - LDAP Active Directory credential → GE_LDAP_* for AD checks
 
 - name: Bootstrap AAP runner for Global Executor role sync
   hosts: localhost
@@ -16,7 +17,6 @@
     - vars/secrets.yml
 
   vars:
-    # --- Object names / placement ---
     ge_organization: "Global Operations"
     ge_inventory_name: "Global Executor Inventory"
     ge_project_name: "Global Executor"
@@ -24,16 +24,15 @@
     ge_schedule_name: "Sync Marker Team Roles hourly"
     ge_playbook: "sync_marker_team_roles.yml"
 
-    # Public Git repo — no Source Control credential required when the repo is public
     project_scm_url: "https://github.com/EXAMPLE_ORG/aap-global-executor.git"
     project_scm_branch: "main"
 
-    # Existing AAP credentials / EE (names must match objects already on AAP)
     ge_vault_credential: "CHANGE_ME_VAULT_CREDENTIAL"
     ge_aap_api_credential: "CHANGE_ME_AAP_API_CREDENTIAL"
+    ge_ldap_credential: "Global Executor LDAP"
+    ge_ldap_credential_type: "LDAP Active Directory"
     ge_execution_environment: "CHANGE_ME_EE"
 
-    # Connection from vars/secrets.yml (ansible-vault)
     aap_hostname: "{{ vault_aap_hostname }}"
     aap_username: "{{ vault_aap_username }}"
     aap_password: "{{ vault_aap_password }}"
@@ -45,6 +44,67 @@
     aap_configuration_async_dir: /tmp/ansible-async-ge
 
   tasks:
+    # No built-in AAP credential type injects LDAP bind settings for playbooks.
+    # Create a custom type that injects GE_LDAP_* environment variables.
+    - name: Define LDAP Active Directory credential type
+      ansible.builtin.set_fact:
+        controller_credential_types:
+          - name: "{{ ge_ldap_credential_type }}"
+            description: "LDAP/AD bind settings for Global Executor AD account checks"
+            kind: cloud
+            inputs:
+              fields:
+                - id: ldap_server
+                  type: string
+                  label: LDAP Server URI
+                  help_text: "e.g. ldaps://dc.example.com:636"
+                - id: ldap_bind_dn
+                  type: string
+                  label: Bind DN
+                - id: ldap_bind_password
+                  type: string
+                  label: Bind Password
+                  secret: true
+                - id: ldap_search_base
+                  type: string
+                  label: Search Base
+                  help_text: "e.g. DC=example,DC=com"
+                - id: ldap_validate_certs
+                  type: string
+                  label: Validate TLS Certificates
+                  help_text: "true or false"
+              required:
+                - ldap_server
+                - ldap_bind_dn
+                - ldap_bind_password
+                - ldap_search_base
+            injectors:
+              env:
+                GE_LDAP_SERVER: "{{ '{{' }} ldap_server {{ '}}' }}"
+                GE_LDAP_BIND_DN: "{{ '{{' }} ldap_bind_dn {{ '}}' }}"
+                GE_LDAP_BIND_PASSWORD: "{{ '{{' }} ldap_bind_password {{ '}}' }}"
+                GE_LDAP_SEARCH_BASE: "{{ '{{' }} ldap_search_base {{ '}}' }}"
+                GE_LDAP_VALIDATE_CERTS: "{{ '{{' }} ldap_validate_certs {{ '}}' }}"
+
+    - name: Define LDAP credential when vault LDAP vars are present
+      ansible.builtin.set_fact:
+        controller_credentials:
+          - name: "{{ ge_ldap_credential }}"
+            description: "LDAP bind used by Sync Marker Team Roles for AD validation"
+            credential_type: "{{ ge_ldap_credential_type }}"
+            organization: "{{ ge_organization }}"
+            inputs:
+              ldap_server: "{{ vault_ldap_server }}"
+              ldap_bind_dn: "{{ vault_ldap_bind_dn }}"
+              ldap_bind_password: "{{ vault_ldap_bind_password }}"
+              ldap_search_base: "{{ vault_ldap_search_base }}"
+              ldap_validate_certs: "{{ vault_ldap_validate_certs | default(false) | string }}"
+      when:
+        - vault_ldap_server is defined
+        - vault_ldap_bind_dn is defined
+        - vault_ldap_bind_password is defined
+        - vault_ldap_search_base is defined
+
     - name: Define inventory in memory
       ansible.builtin.set_fact:
         controller_inventories:
@@ -82,14 +142,14 @@
       ansible.builtin.set_fact:
         controller_templates:
           - name: "{{ ge_job_template_name }}"
-            description: "Sync Organization Execute for marker-team members across all organizations"
+            description: >-
+              Sync Organization Execute for GE_EXECUTOR_USERS after AD account
+              validation (exists, enabled, password not expired)
             organization: "{{ ge_organization }}"
             project: "{{ ge_project_name }}"
             playbook: "{{ ge_playbook }}"
             inventory: "{{ ge_inventory_name }}"
-            credentials:
-              - "{{ ge_vault_credential }}"
-              - "{{ ge_aap_api_credential }}"
+            credentials: "{{ [ge_vault_credential, ge_aap_api_credential] + ([ge_ldap_credential] if (controller_credentials is defined) else []) }}"
             execution_environment: "{{ ge_execution_environment }}"
             job_type: run
             ask_credential_on_launch: false
@@ -103,14 +163,19 @@
           - name: "{{ ge_schedule_name }}"
             description: "Run Sync Marker Team Roles every hour"
             unified_job_template: "{{ ge_job_template_name }}"
-            rrule: "DTSTART;TZID=Europe/Madrid:20260922T000000 RRULE:FREQ=HOURLY;INTERVAL=1"
+            rrule: "DTSTART;TZID=UTC:20260101T000000 RRULE:FREQ=HOURLY;INTERVAL=1"
             enabled: true
 
-    - name: Dispatch Global Executor runner objects
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.dispatch
+    - name: Build dispatcher role list
+      ansible.builtin.set_fact:
+        __bootstrap_dispatcher_roles: "{{ __base + __creds + __rest }}"
       vars:
-        aap_configuration_dispatcher_roles:
+        __base:
+          - role: controller_credential_types
+            var: controller_credential_types
+            tags: [credential_types, controller_credential_types]
+        __creds: "{{ [{'role': 'controller_credentials', 'var': 'controller_credentials', 'tags': ['credentials', 'controller_credentials']}] if (controller_credentials is defined) else [] }}"
+        __rest:
           - role: controller_inventories
             var: controller_inventories
             tags: [inventories, controller_inventories]
@@ -127,10 +192,18 @@
             var: controller_schedules
             tags: [schedules, controller_schedules]
 
+    - name: Dispatch Global Executor runner objects
+      ansible.builtin.include_role:
+        name: infra.aap_configuration.dispatch
+      vars:
+        aap_configuration_dispatcher_roles: "{{ __bootstrap_dispatcher_roles }}"
+
     - name: Show created runner objects
       ansible.builtin.debug:
         msg:
           organization: "{{ ge_organization }}"
+          ldap_credential_type: "{{ ge_ldap_credential_type }}"
+          ldap_credential: "{{ ge_ldap_credential if (controller_credentials is defined) else '(create manually in UI)' }}"
           inventory: "{{ ge_inventory_name }}"
           project: "{{ ge_project_name }}"
           project_scm_url: "{{ project_scm_url }}"
@@ -139,3 +212,4 @@
           execution_environment: "{{ ge_execution_environment }}"
           job_template: "{{ ge_job_template_name }}"
           schedule: "{{ ge_schedule_name }} (hourly)"
+          note: "Set JT env GE_EXECUTOR_USERS=user1,user2 (or extra var ge_executor_users)"

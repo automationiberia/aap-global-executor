@@ -1,0 +1,35 @@
+---
+# Evaluate one candidate username against Active Directory via files/eval_ad_account.py
+# (python-ldap only; no community.general). Appends to __ad_checks: {user, ok, reason}.
+
+- name: Evaluate AD account for {{ __candidate_user }}
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python | default('python3') }}"
+      - "{{ playbook_dir }}/files/eval_ad_account.py"
+      - --server
+      - "{{ __ldap_server }}"
+      - --bind-dn
+      - "{{ __ldap_bind_dn }}"
+      - --bind-password
+      - "{{ __ldap_bind_password }}"
+      - --search-base
+      - "{{ __ldap_search_base }}"
+      - --username
+      - "{{ __candidate_user }}"
+      - --validate-certs
+      - "{{ __ldap_validate_certs | bool | ternary('true', 'false') }}"
+  register: __ad_eval_cmd
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Record AD evaluation for {{ __candidate_user }}
+  ansible.builtin.set_fact:
+    __ad_checks: "{{ __ad_checks | default([]) + [__row] }}"
+  vars:
+    __parsed: "{{ (__ad_eval_cmd.stdout | default('{}') | from_json) if (__ad_eval_cmd.stdout | default('') | length) > 0 else {'ok': false, 'reason': 'ldap_error'} }}"
+    __row:
+      user: "{{ __candidate_user }}"
+      ok: "{{ __parsed.ok | default(false) | bool }}"
+      reason: "{{ __parsed.reason | default('ldap_error') }}"
