@@ -1,0 +1,2 @@
+# Runtime Python deps for files/eval_ad_account.py
+python-ldap

@@ -10,3 +10,4 @@ collections:
     version: ">=2.7.20260812"
   - name: ansible.controller
     version: ">=4.5.0"
+...

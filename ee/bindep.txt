@@ -1,0 +1,7 @@
+# Build deps to compile python-ldap against OpenLDAP (stripped from final image via [compile])
+gcc [compile platform:rpm]
+python3.12-devel [compile platform:rpm]
+openldap-devel [compile platform:rpm]
+
+# Runtime: ldapsearch fallback when python-ldap import fails
+openldap-clients [platform:rpm]

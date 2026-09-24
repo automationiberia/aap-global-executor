@@ -1,0 +1,30 @@
+---
+# Minimal Execution Environment for AAP Global Executor.
+#
+# Provides python-ldap (and openldap-clients as ldapsearch fallback) on top of
+# the AAP 2.6 minimal RHEL9 image. Collections come from the project file
+# collections/requirements.yml (AAP "Enable collection download").
+#
+# Build (from repo root, after podman login to registry.redhat.io):
+#   ansible-builder build -f ee/execution-environment.yml -t global-executor-ee:latest -v3
+#
+# Then push to your registry and set ge_execution_environment / JT EE to that image.
+
+version: 3
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-26/ee-minimal-rhel9:latest
+
+dependencies:
+  python_interpreter:
+    package_system: "python3.12"
+    python_path: "/usr/bin/python3.12"
+
+  # Prefer pip python-ldap; bindep openldap-clients covers the ldapsearch fallback.
+  python: requirements.txt
+  system: bindep.txt
+...

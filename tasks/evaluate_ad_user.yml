@@ -79,3 +79,4 @@
       ok: "{{ __ad_eval_parsed.ok | default(false) | bool }}"
       reason: "{{ __ad_eval_parsed.reason | default('ldap_error') }}"
       detail: "{{ __ad_eval_parsed.detail | default('') }}"
+...

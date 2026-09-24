@@ -220,3 +220,4 @@
           job_template: "{{ ge_job_template_name }}"
           schedule: "{{ ge_schedule_name }} (hourly)"
           note: "Set JT env GE_EXECUTOR_USERS=user1,user2 (or extra var ge_executor_users)"
+...

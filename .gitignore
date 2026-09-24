@@ -5,3 +5,6 @@ __pycache__/
 .vault_pass
 .bare.git/
 vars/secrets.yml
+
+# ansible-builder build context (regenerated locally)
+ee/context/

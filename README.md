@@ -17,6 +17,7 @@ in AD have that role revoked. Users outside the list are left untouched.
 | `tasks/evaluate_ad_user.yml` | Per-user LDAP lookup + AD flag evaluation |
 | `files/eval_ad_account.py` | AD account status helper (disabled / password / expiry) |
 | `collections/requirements.yml` | Collections installed into the job / project |
+| `ee/` | Minimal Execution Environment definition (`ansible-builder`) |
 | `vars/secrets.yml.example` | Template for vaulted AAP + LDAP settings |
 
 ## How it works
@@ -53,9 +54,9 @@ Authenticator maps and marker teams are **not** used.
 - Red Hat Ansible Automation Platform API credential (`CONTROLLER_*`)
 - Custom **LDAP Active Directory** credential (created by bootstrap; injects
   `GE_LDAP_*`)
-- Execution environment that can reach Gateway **and** LDAP/AD, with
-  `python-ldap` / `python3-ldap` **or** OpenLDAP clients (`ldapsearch`) installed
-  (used by `files/eval_ad_account.py`)
+- Execution environment that can reach Gateway **and** LDAP/AD. Use the
+  definition under `ee/` (adds `python-ldap` + `openldap-clients`), or any EE
+  that includes those packages
 - Project collection install enabled for `collections/requirements.yml`
 
 ## Environment variables
@@ -141,6 +142,36 @@ ansible-playbook sync_marker_team_roles.yml --vault-password-file .vault_pass
 ### On AAP
 
 Launch **Sync Marker Team Roles** (or wait for the hourly schedule).
+
+## Execution environment
+
+`ee/` defines a **minimal** image on
+`ansible-automation-platform-26/ee-minimal-rhel9` with only what AD validation
+needs beyond the base image:
+
+| Layer | Content |
+|-------|---------|
+| Python | `python-ldap` (`ee/requirements.txt`) |
+| System | `openldap-clients` (+ compile deps for `python-ldap`) |
+| Collections | *not* baked in — use project `collections/requirements.yml` |
+
+Build and publish:
+
+```bash
+# registry.redhat.io login required for the base image
+podman login registry.redhat.io
+
+ansible-builder build \
+  -f ee/execution-environment.yml \
+  -t global-executor-ee:latest \
+  -v3
+
+podman tag global-executor-ee:latest YOUR_REGISTRY/global-executor-ee:latest
+podman push YOUR_REGISTRY/global-executor-ee:latest
+```
+
+Register the image in AAP as an Execution Environment, point the Job Template
+(or `ge_execution_environment` in secrets) at it, then re-run the sync.
 
 ## Collections
 
