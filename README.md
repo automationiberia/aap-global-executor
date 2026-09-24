@@ -4,9 +4,11 @@ Ansible Automation Platform (AAP) Configuration as Code that keeps
 **Organization Execute** in sync across every organization for a fixed list of
 executor usernames, after validating each account in Active Directory.
 
-Eligible users (on the list **and** OK in AD) receive Organization Execute on
-all orgs. Listed users that are missing, disabled, locked, or password-expired
-in AD have that role revoked. Users outside the list are left untouched.
+Eligible users (on the list, OK in AD, **and already present in AAP**) receive
+Organization Execute on all orgs. Listed users that are missing, disabled,
+locked, or password-expired in AD have that role revoked. Listed users that
+have never logged into AAP are skipped (no create/revoke). Users outside the
+list are left untouched.
 
 ## Contents
 
@@ -28,10 +30,13 @@ GE_EXECUTOR_USERS (env) ──► candidate usernames
         ▼
    LDAP/AD lookup (GE_LDAP_* credential)
         │
-        ├── OK (exists, enabled, password not expired)
+        ├── not present in AAP Gateway users
+        │         └── skip (no role create/revoke until first login)
+        │
+        ├── OK in AD + present in AAP
         │         └── grant Organization Execute on all orgs (delta)
         │
-        └── NOT OK (missing / disabled / password expired / locked)
+        └── NOT OK in AD + present in AAP
                   └── revoke Organization Execute for that user (delta)
 ```
 
@@ -39,10 +44,11 @@ GE_EXECUTOR_USERS (env) ──► candidate usernames
 2. For each username, query AD with `files/eval_ad_account.py` (`python-ldap`,
    or `ldapsearch` fallback)
    and evaluate account flags.
-3. Export organizations and role-user assignments with
+3. Export organizations, Gateway users, and role-user assignments with
    `infra.aap_configuration_extended.filetree_create` / `filetree_read`.
-4. Compute a **delta** of creates and revokes vs the exported state.
-5. Apply with `gateway_role_user_assignments` (skipped when empty).
+4. Drop candidates that do not exist in AAP yet (no login → no Gateway user).
+5. Compute a **delta** of creates and revokes vs the exported state.
+6. Apply with `gateway_role_user_assignments` (skipped when empty).
 
 Authenticator maps and marker teams are **not** used.
 

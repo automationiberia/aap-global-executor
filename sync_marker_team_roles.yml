@@ -160,7 +160,7 @@
     # -------------------------------------------------------------------------
     # 2. Export organizations and role assignments from AAP
     # -------------------------------------------------------------------------
-    - name: Export organizations and role user assignments from AAP
+    - name: Export organizations, users, and role assignments from AAP
       ansible.builtin.import_role:
         name: infra.aap_configuration_extended.filetree_create
       vars:
@@ -168,6 +168,7 @@
         omit_id: true
         input_tag:
           - gateway_organizations
+          - gateway_users
           - gateway_role_user_assignments
 
     - name: Load exported state with filetree_read
@@ -182,6 +183,22 @@
         __all_organizations: "{{ aap_organizations | default(gateway_organizations | default([])) }}"
         __all_role_user_assignments: "{{ gateway_role_user_assignments | default([]) }}"
         __org_names: "{{ (aap_organizations | default(gateway_organizations | default([]))) | map(attribute='name') | list }}"
+        __aap_usernames: "{{ (aap_user_accounts | default(gateway_users | default([]))) | map(attribute='username') | list }}"
+
+    # Users who never logged into AAP are not in Gateway yet; role assign/revoke
+    # would fail with "User lookup failed". Skip them until they exist.
+    - name: Restrict role sync to listed users that already exist in AAP
+      ansible.builtin.set_fact:
+        __skipped_absent_from_aap: "{{ ge_executor_user_list | reject('in', __aap_usernames) | list }}"
+        __eligible_users: "{{ __eligible_users | select('in', __aap_usernames) | list }}"
+        __ineligible_users: "{{ __ineligible_users | select('in', __aap_usernames) | list }}"
+
+    - name: Show AAP presence filter
+      ansible.builtin.debug:
+        msg:
+          skipped_absent_from_aap: "{{ __skipped_absent_from_aap }}"
+          eligible_for_roles: "{{ __eligible_users }}"
+          ineligible_for_roles: "{{ __ineligible_users }}"
 
     # -------------------------------------------------------------------------
     # 3. Compute desired creates / revokes (scoped to GE_EXECUTOR_USERS)
@@ -251,6 +268,7 @@
     - name: Show role sync delta
       ansible.builtin.debug:
         msg:
+          skipped_absent_from_aap: "{{ __skipped_absent_from_aap | length }}"
           eligible_users: "{{ __eligible_users | length }}"
           ineligible_users: "{{ __ineligible_users | length }}"
           organizations: "{{ __org_names | length }}"
